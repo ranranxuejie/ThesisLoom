@@ -7,17 +7,44 @@ import requests
 from typing import Any
 from volcenginesdkarkruntime import Ark
 
+
+def _load_llm_runtime_config_from_inputs() -> tuple[str, str]:
+    candidate_paths = [
+        "inputs/inputs_safe.json",
+        "inputs_safe.json",
+        "inputs.json",
+        "inputs/inputs.json",
+    ]
+    inputs_path = ""
+    for path in candidate_paths:
+        if os.path.exists(path):
+            inputs_path = path
+            break
+
+    if not os.path.exists(inputs_path):
+        return "", ""
+
+    try:
+        with open(inputs_path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return str(data.get("base_url", "")).strip(), str(data.get("model_api_key", "")).strip()
+    except Exception:
+        return "", ""
+
 def call_llm(system_input: str,
              user_input: str="",
              json_schema: dict=None,
-             model: str = "doubao-seed-2-0-pro-260215",
-             # model: str = "gemini-3-pro",
+            #  model: str = "doubao-seed-2-0-pro-260215",
+             model: str = "gemini-3-pro",
              thinking: bool = True,
-             max_completion_tokens: int = 2**15) -> Any:
+             max_completion_tokens: int = 2**15,
+             request_timeout: tuple[float, float] = (20.0, 240.0)) -> Any:
+    cfg_base_url, cfg_model_api_key = _load_llm_runtime_config_from_inputs()
+
     # 用一个字典作为容器，用来在主线程和子线程之间传递结果或异常
     result_container = {}
     if 'doubao' in model:
-        api_key = os.getenv("ARK_API_KEY")
+        api_key = os.getenv("ARK_API_KEY") or cfg_model_api_key
         if not api_key:
             raise EnvironmentError("Please set ARK_API_KEY environment variable")
         client = Ark(base_url="https://ark.cn-beijing.volces.com/api/v3", api_key=api_key,timeout=1800)
@@ -41,14 +68,14 @@ def call_llm(system_input: str,
             except Exception as e:
                 result_container['error'] = e
 
-        print(f"\t\t\t🚀 发起模型请求 (模型: {model}, 思考模式: {'开启' if thinking else '关闭'})")
+        print(f"\t\t\t[RUN] 发起模型请求 (模型: {model}, 思考模式: {'开启' if thinking else '关闭'})")
 
         # 1. 启动后台子线程执行耗时的 API 调用
         api_thread = threading.Thread(target=_api_call)
 
     else:
-        base_url = os.getenv("LOCAL_API_URL") # OPENAI_API_BASE_URL
-        token = os.getenv("LOCAL_API_TOKEN")
+        base_url = os.getenv("LOCAL_API_URL") or cfg_base_url
+        token = os.getenv("LOCAL_API_TOKEN") or cfg_model_api_key
         # --- 新增：调用你本地的 FastAPI 代理服务 ---
         if not base_url:
             raise EnvironmentError("Please set LOCAL_API_URL LOCAL environment variables")
@@ -72,7 +99,13 @@ def call_llm(system_input: str,
             try:
                 full_content = ""
                 # 使用 stream=True 接收流式返回
-                with requests.post(proxy_url, headers=headers, json=payload, stream=True) as resp:
+                with requests.post(
+                    proxy_url,
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=request_timeout,
+                ) as resp:
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         if line:
@@ -99,7 +132,7 @@ def call_llm(system_input: str,
             except Exception as e:
                 result_container['error'] = str(e)
 
-        print(f"\t\t\t🚀 发起BaseURL请求 (模型: {model})")
+        print(f"\t\t\t[RUN] 发起BaseURL请求 (模型: {model})")
         api_thread = threading.Thread(target=_proxy_call)
     # --- 共通逻辑：启动线程并渲染计时器 ---
     api_thread.start()
@@ -107,14 +140,19 @@ def call_llm(system_input: str,
 
     while api_thread.is_alive():
         elapsed_time = time.time() - start_time
-        sys.stdout.write(f"\r\t\t⏳ 等待模型响应中... 已耗时: {elapsed_time:.1f} 秒")
+        sys.stdout.write(f"\r\t\t[WAIT] 等待模型响应中... 已耗时: {elapsed_time:.1f} 秒")
         sys.stdout.flush()
         time.sleep(0.02)
     total_time = time.time() - start_time
-    sys.stdout.write(f"\r\t\t\t✅ 请求完成！总耗时: {total_time:.1f} 秒" + " " * 10 + "\n")
+    sys.stdout.write(f"\r\t\t\t[OK] 请求完成！总耗时: {total_time:.1f} 秒" + " " * 10 + "\n")
     sys.stdout.flush()
 
+    if 'error' in result_container:
+        raise RuntimeError(f"LLM request failed: {result_container['error']}")
+
     response = result_container.get('response', '')
+    if not str(response).strip():
+        raise RuntimeError("LLM request returned empty response")
 
 
     try:

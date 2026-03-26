@@ -1,5 +1,10 @@
 ﻿{
-  "topic": "ThesisLoom: An Autonomous Multi-Agent State-Graph Framework for Iterative Generation and Self-Correction of Full-Length Academic Papers",
+  "topic": "",
   "language": "English",
-  "model": "gemini-3-pro"
+  "model": "gpt-5.2",
+  "max_review_rounds": 3,
+  "paper_search_limit": 30,
+  "openalex_api_key": "",
+  "base_url": "",
+  "model_api_key": ""
 }
