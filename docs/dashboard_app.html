@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ThesisLoom HCI Console</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #f2f7f5;
+      --panel: #ffffff;
+      --line: #d6e4dd;
+      --ink: #102a43;
+      --muted: #486581;
+      --primary: #0ea5a4;
+      --danger: #dc2626;
+      --warning: #d97706;
+      --ok: #0f766e;
+    }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(circle at 10% 0%, #eaf8f1 0%, var(--bg) 50%, #e2f2f8 100%);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      min-height: 100vh;
+    }
+    .shell {
+      padding: 14px;
+    }
+    .topbar {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(135deg, #ffffff 0%, #f3fbf8 100%);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 6px 20px rgba(16, 42, 67, 0.08);
+    }
+    .pill {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 10px;
+      margin-right: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #fff;
+    }
+    .layout {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1.05fr 1.3fr 1.2fr;
+    }
+    @media (max-width: 1200px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 6px 20px rgba(16, 42, 67, 0.06);
+      min-height: 240px;
+      overflow: hidden;
+    }
+    .panel-hd {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fbfefd 0%, #f6fbf9 100%);
+      font-weight: 700;
+    }
+    .panel-bd {
+      padding: 12px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px;
+      background: #fff;
+    }
+    .stat .k { color: var(--muted); font-size: 12px; }
+    .stat .v { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .tiny {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .editor {
+      width: 100%;
+      min-height: 180px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      resize: vertical;
+      background: #fcfffe;
+    }
+    .action-alert {
+      border: 2px solid #f59e0b;
+      background: #fff7ed;
+      border-radius: 10px;
+      padding: 10px;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .action-alert.ok {
+      border-color: #86efac;
+      background: #f0fdf4;
+      animation: none;
+    }
+    .btn-strong {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #f97316 0%, #dc2626 100%);
+      color: white;
+      box-shadow: 0 8px 20px rgba(220, 38, 38, 0.25);
+    }
+    .btn-strong:hover { opacity: 0.92; }
+    .logs {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px;
+      background: #fafdff;
+      max-height: 260px;
+      overflow: auto;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .table-compact td, .table-compact th {
+      font-size: 12px;
+      padding: 4px 6px;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.35); }
+      100% { box-shadow: 0 0 0 12px rgba(245, 158, 11, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+          <h5 class="mb-1">ThesisLoom Human-in-the-Loop Console</h5>
+          <div id="topicLine" class="tiny">Topic: -</div>
+        </div>
+        <div>
+          <span id="phasePill" class="pill">phase: -</span>
+          <span id="runtimePill" class="pill">runtime: -</span>
+          <span id="timePill" class="pill">server: -</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-hd">左侧 · 流程图与性能</div>
+        <div class="panel-bd">
+          <div id="flowGraph" class="mb-2">加载流程图...</div>
+          <div class="stats-grid mb-2">
+            <div class="stat"><div class="k">Model</div><div id="model" class="v">-</div></div>
+            <div class="stat"><div class="k">Language</div><div id="language" class="v">-</div></div>
+            <div class="stat"><div class="k">LLM Calls</div><div id="llmCalls" class="v">0</div></div>
+            <div class="stat"><div class="k">Total Tokens</div><div id="llmTokens" class="v">0</div></div>
+            <div class="stat"><div class="k">Step Calls</div><div id="stepCalls" class="v">0</div></div>
+            <div class="stat"><div class="k">Step Time(s)</div><div id="stepSeconds" class="v">0</div></div>
+          </div>
+          <div class="tiny mb-1">Top Step 耗时（平均）</div>
+          <div class="logs" id="topSteps">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-hd">中间 · 输入修改与展示</div>
+        <div class="panel-bd">
+          <div class="mb-2 d-flex gap-2 flex-wrap">
+            <select id="centerFileSelect" class="form-select form-select-sm" style="max-width: 360px"></select>
+            <button class="btn btn-sm btn-outline-secondary" id="btnLoadCenter">加载</button>
+            <button class="btn btn-sm btn-primary" id="btnSaveCenter">保存</button>
+            <button class="btn btn-sm btn-success" id="btnStartFlow">保存并开始工作流</button>
+          </div>
+          <textarea id="centerEditor" class="editor" placeholder="选择文件后可编辑..." spellcheck="false"></textarea>
+          <div id="centerMsg" class="tiny mt-2">-</div>
+          <hr>
+          <div class="tiny">支持编辑：inputs.json 与下列输入文档</div>
+          <ul class="tiny mb-0">
+            <li>inputs/existing_material.md</li>
+            <li>inputs/existing_sections.md</li>
+            <li>inputs/revision_requests.md</li>
+            <li>inputs/user_requirements.md</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-hd">右侧 · 模型输出 / 日志 / 用户操作</div>
+        <div class="panel-bd">
+          <div id="actionBox" class="action-alert mb-2">
+            <div class="fw-bold mb-1">待处理动作</div>
+            <div id="actionText" class="tiny">-</div>
+            <div class="mt-2 d-flex flex-wrap gap-2" id="actionButtons"></div>
+          </div>
+
+          <div class="tiny mb-1">LLM 最近调用</div>
+          <div class="logs mb-2" id="llmRecent">-</div>
+
+          <div class="d-flex gap-2 mb-1">
+            <button class="btn btn-sm btn-outline-dark" id="btnLogKey">关键日志</button>
+            <button class="btn btn-sm btn-outline-dark" id="btnLogDetail">详细日志</button>
+          </div>
+          <div class="logs" id="logs">日志加载中...</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    let logMode = 'key';
+    const files = [
+      'inputs.json',
+      'inputs/existing_material.md',
+      'inputs/existing_sections.md',
+      'inputs/revision_requests.md',
+      'inputs/user_requirements.md'
+    ];
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function safeJson(v, fallback = {}) {
+      try { return JSON.parse(v); } catch (_) { return fallback; }
+    }
+
+    function drawFlow(state) {
+      const action = state.pending_action || 'none';
+      const phase = state.workflow_phase || 'idle';
+      const graph = `flowchart TB
+A[Confirm Inputs] --> B{Enable Search?}
+B -->|Yes| C[Search Papers]
+B -->|No| D[Research Gaps]
+C --> D
+D --> E[Architect]
+E --> F[Planner]
+F --> G[Writer]
+G --> H[Review Pending]
+H --> I[Overall Review]
+I --> J[Major Review]
+J --> K{Passed?}
+K -->|No| L[Rewrite]
+L --> I
+K -->|Yes| M[Done]
+classDef active fill:#dcfce7,stroke:#16a34a,color:#14532d;
+classDef wait fill:#fff7ed,stroke:#d97706,color:#7c2d12;
+class ${phase.includes('review') ? 'I' : 'E'} active;
+class ${action !== 'none' ? 'H' : 'M'} wait;`;
+      const box = document.getElementById('flowGraph');
+      box.innerHTML = `<pre class="mermaid">${graph}</pre>`;
+      mermaid.run({ querySelector: '#flowGraph .mermaid' });
+    }
+
+    async function fetchState() {
+      const resp = await fetch('/api/state?_=' + Date.now());
+      return await resp.json();
+    }
+
+    async function fetchLogs() {
+      const resp = await fetch('/api/logs?mode=' + encodeURIComponent(logMode) + '&limit=150&_=' + Date.now());
+      return await resp.json();
+    }
+
+    async function postAction(payload) {
+      const resp = await fetch('/api/action', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      return await resp.json();
+    }
+
+    async function loadJsonInputs() {
+      const resp = await fetch('/api/inputs?_=' + Date.now());
+      return await resp.json();
+    }
+
+    async function saveJsonInputs(content) {
+      const resp = await fetch('/api/inputs', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content})
+      });
+      return await resp.json();
+    }
+
+    async function loadInputFile(path) {
+      const resp = await fetch('/api/input-file?path=' + encodeURIComponent(path) + '&_=' + Date.now());
+      return await resp.json();
+    }
+
+    async function saveInputFile(path, content) {
+      const resp = await fetch('/api/input-file', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path, content})
+      });
+      return await resp.json();
+    }
+
+    function renderActionBox(state) {
+      const action = state.pending_action || '';
+      const actionText = document.getElementById('actionText');
+      const actionButtons = document.getElementById('actionButtons');
+      const actionBox = document.getElementById('actionBox');
+      actionButtons.innerHTML = '';
+
+      if (!action) {
+        actionBox.className = 'action-alert ok mb-2';
+        actionText.textContent = '当前无阻塞动作，工作流可继续运行。';
+        return;
+      }
+
+      actionBox.className = 'action-alert mb-2';
+      actionText.textContent = state.pending_action_message || ('待处理动作: ' + action);
+
+      const addBtn = (label, onClick, strong = false) => {
+        const btn = document.createElement('button');
+        btn.className = strong ? 'btn-strong' : 'btn btn-sm btn-warning';
+        btn.textContent = label;
+        btn.onclick = onClick;
+        actionButtons.appendChild(btn);
+      };
+
+      if (action === 'confirm_inputs_ready') {
+        addBtn('我已完成输入，继续工作流', async () => {
+          await postAction({action: 'confirm_inputs_ready'});
+          await refreshAll();
+        }, true);
+        return;
+      }
+      if (action === 'set_enable_search') {
+        addBtn('执行文献检索并继续', async () => {
+          await postAction({action: 'set_enable_search', value: true});
+          await refreshAll();
+        }, true);
+        addBtn('跳过文献检索继续', async () => {
+          await postAction({action: 'set_enable_search', value: false});
+          await refreshAll();
+        }, false);
+        return;
+      }
+      if (action === 'confirm_related_works') {
+        addBtn('我已补充 related_works，继续', async () => {
+          await postAction({action: 'confirm_related_works'});
+          await refreshAll();
+        }, true);
+        return;
+      }
+      if (action === 'enter_reviewing') {
+        addBtn('确认进入审稿并继续', async () => {
+          await postAction({
+            action: 'enter_reviewing',
+            load_requirements: true,
+            requirements_path: 'inputs/user_requirements.md',
+            manual_revision_path: 'inputs/revision_requests.md'
+          });
+          await refreshAll();
+        }, true);
+        return;
+      }
+    }
+
+    async function loadCenterFile() {
+      const selected = document.getElementById('centerFileSelect').value;
+      const editor = document.getElementById('centerEditor');
+      if (selected === 'inputs.json') {
+        const data = await loadJsonInputs();
+        if (data.ok) {
+          editor.value = data.raw || '{}';
+          setText('centerMsg', '已加载 inputs.json');
+        } else {
+          setText('centerMsg', '加载失败: ' + (data.message || 'unknown'));
+        }
+        return;
+      }
+
+      const data = await loadInputFile(selected);
+      if (data.ok) {
+        editor.value = data.content || '';
+        setText('centerMsg', '已加载 ' + selected);
+      } else {
+        setText('centerMsg', '加载失败: ' + (data.message || 'unknown'));
+      }
+    }
+
+    async function saveCenterFile() {
+      const selected = document.getElementById('centerFileSelect').value;
+      const content = document.getElementById('centerEditor').value || '';
+      if (selected === 'inputs.json') {
+        const data = await saveJsonInputs(content);
+        setText('centerMsg', data.ok ? 'inputs.json 保存成功' : ('保存失败: ' + (data.message || 'unknown')));
+        return data.ok;
+      }
+      const data = await saveInputFile(selected, content);
+      setText('centerMsg', data.ok ? (selected + ' 保存成功') : ('保存失败: ' + (data.message || 'unknown')));
+      return data.ok;
+    }
+
+    async function saveAndStart() {
+      const ok = await saveCenterFile();
+      if (!ok) return;
+      await postAction({action: 'confirm_inputs_ready'});
+      await refreshAll();
+    }
+
+    function renderMetrics(data) {
+      const llm = data.llm_usage || {};
+      const wm = data.workflow_metrics || {};
+      const totals = wm.totals || {};
+      const top = wm.top_steps || [];
+
+      setText('llmCalls', String(llm.calls || 0));
+      setText('llmTokens', String(llm.total_tokens || 0));
+      setText('stepCalls', String(totals.step_calls || 0));
+      setText('stepSeconds', String(totals.total_step_seconds || 0));
+
+      const topLines = top.map((x) => `${x.step}: avg=${(x.avg_seconds || 0).toFixed(2)}s, last=${(x.last_seconds || 0).toFixed(2)}s, failed=${x.failed || 0}`);
+      setText('topSteps', topLines.length ? topLines.join('\n') : '-');
+
+      const rec = (llm.recent || []).map((x) => {
+        const ok = x.success ? 'OK' : 'ERR';
+        return `[${x.time}] ${ok} ${x.model} | tokens=${x.total_tokens} | ${x.elapsed_seconds}s`;
+      });
+      setText('llmRecent', rec.length ? rec.join('\n') : '-');
+    }
+
+    async function refreshAll() {
+      try {
+        const [state, logs] = await Promise.all([fetchState(), fetchLogs()]);
+
+        setText('topicLine', 'Topic: ' + ((state.pending_action === 'confirm_inputs_ready') ? (state.inputs_topic || state.topic || '(empty)') : (state.topic || state.inputs_topic || '(empty)')));
+        setText('phasePill', 'phase: ' + (state.workflow_phase || '-'));
+        setText('runtimePill', 'runtime: ' + (state.runtime_status || '-') + ' | ' + (state.runtime_message || '-'));
+        setText('timePill', 'server: ' + (state.server_time || '-'));
+
+        setText('model', state.has_checkpoint ? (state.model || '-') : (state.inputs_model || state.model || '-'));
+        setText('language', state.has_checkpoint ? (state.language || '-') : (state.inputs_language || state.language || '-'));
+
+        drawFlow(state);
+        renderActionBox(state);
+        renderMetrics(state);
+
+        const logRows = (logs.items || []).map((x) => `[${x.time || '-'}][${x.level || '-'}] ${x.message || ''}`);
+        setText('logs', logRows.length ? logRows.join('\n') : '暂无日志');
+      } catch (e) {
+        setText('logs', '状态读取失败: ' + e);
+      }
+    }
+
+    function initFileSelector() {
+      const sel = document.getElementById('centerFileSelect');
+      files.forEach((f) => {
+        const op = document.createElement('option');
+        op.value = f;
+        op.textContent = f;
+        sel.appendChild(op);
+      });
+      sel.value = 'inputs.json';
+    }
+
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+
+    document.getElementById('btnLoadCenter').onclick = loadCenterFile;
+    document.getElementById('btnSaveCenter').onclick = saveCenterFile;
+    document.getElementById('btnStartFlow').onclick = saveAndStart;
+    document.getElementById('btnLogKey').onclick = function() { logMode = 'key'; refreshAll(); };
+    document.getElementById('btnLogDetail').onclick = function() { logMode = 'detail'; refreshAll(); };
+
+    initFileSelector();
+    loadCenterFile();
+    refreshAll();
+    setInterval(refreshAll, 2000);
+  </script>
+</body>
+</html>

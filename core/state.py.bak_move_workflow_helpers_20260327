@@ -1,6 +1,5 @@
 from typing import Dict, Any
 import os, json
-import glob
 import re
 from datetime import datetime
 
@@ -32,59 +31,6 @@ def build_output_paths(model: str, topic: str, prompt_language: str) -> tuple[st
     output = f"completed_history/{safe_model}_{safe_topic}_{prompt_language}.md"
     checkpoint = f"completed_history/{safe_model}_{safe_topic}_{prompt_language}_checkpoint.json"
     return output, checkpoint
-
-
-def load_topic_from_inputs_json() -> str:
-    try:
-        payload = json.load(open(resolve_inputs_path(), "r", encoding="utf-8-sig"))
-        return str(payload.get("topic", "")).strip()
-    except Exception:
-        return ""
-
-
-def _safe_name(text: str) -> str:
-    return ''.join(ch for ch in str(text) if ch not in '\\/*?:"<>|').replace(" ", "_")
-
-
-def find_latest_checkpoint_for_resume(model: str, prompt_language: str) -> str:
-    safe_model = _safe_name(model)
-    safe_lang = _safe_name(prompt_language)
-    pattern = f"completed_history/{safe_model}_*_{safe_lang}_checkpoint.json"
-    files = glob.glob(pattern)
-    if not files:
-        return ""
-    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return files[0]
-
-
-def output_path_from_checkpoint(checkpoint_path: str) -> str:
-    path = str(checkpoint_path or "")
-    suffix = "_checkpoint.json"
-    if path.endswith(suffix):
-        return path[:-len(suffix)] + ".md"
-    return ""
-
-
-def migrate_paths_after_topic_update(
-    model: str,
-    topic: str,
-    prompt_language: str,
-    output_path: str,
-    checkpoint_path: str,
-) -> tuple[str, str]:
-    new_output_path, new_checkpoint_path = build_output_paths(model, topic, prompt_language)
-    if os.path.normpath(new_checkpoint_path) == os.path.normpath(checkpoint_path):
-        return output_path, checkpoint_path
-
-    os.makedirs(os.path.dirname(new_checkpoint_path) or "completed_history", exist_ok=True)
-
-    if os.path.exists(checkpoint_path):
-        os.replace(checkpoint_path, new_checkpoint_path)
-
-    if output_path and os.path.exists(output_path) and (os.path.normpath(output_path) != os.path.normpath(new_output_path)):
-        os.replace(output_path, new_output_path)
-
-    return new_output_path, new_checkpoint_path
 
 
 def _safe_int_token(value: str) -> int:
@@ -322,7 +268,6 @@ class PaperWriterState:
         self.manual_revision_notes: str = inputs.get("manual_revision_notes", "")
         self.pending_action: str = str(inputs.get("pending_action", "")).strip()
         self.pending_action_message: str = str(inputs.get("pending_action_message", "")).strip()
-        self.runtime_checkpoint_path: str = str(inputs.get("runtime_checkpoint_path", "")).strip()
         os.makedirs(os.path.dirname(self.research_gap_output_path), exist_ok=True)
         if "writing_guidance_library" in inputs:
             self.writing_guidance_library = inputs.get("writing_guidance_library", {})

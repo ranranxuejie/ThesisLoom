@@ -1,11 +1,13 @@
 ﻿{
-  "topic": "",
-  "language": "English",
-  "model": "doubao-seed-2-0-pro-260215",
-  "max_review_rounds": 3,
-  "paper_search_limit": 30,
-  "openalex_api_key": "",
-  "ark_api_key": "",
-  "base_url": "",
-  "model_api_key": ""
+    "topic":  "",
+    "language":  "English",
+    "model":  "doubao-seed-2-0-pro-260215",
+    "max_review_rounds":  3,
+    "paper_search_limit":  30,
+    "openalex_api_key":  "",
+    "ark_api_key":  "",
+    "base_url":  "",
+    "model_api_key":  "",
+    "manual_revision_path":  "inputs/revision_requests.md",
+    "auto_resume":  false
 }

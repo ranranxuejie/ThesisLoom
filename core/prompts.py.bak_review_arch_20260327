@@ -22,7 +22,7 @@ ${overall_guidance}
 2. 动态写作策略 (Writing Order)：真实的学术写作通常非线性（如先锚定 Methods 和 Results，再推演 Discussion，最后包装 Introduction）。请为每个大章节分配 `writing_order`（从 1 开始的整数，不能重复），代表最合理的撰写先后顺序。第0章节也必须拥有 writing_order，并通常应最后完成。
 3. 微观层深剖 (Sub-sections)：在大章节内部，必须将其拆解为逻辑严密的细分小节（如 2.1, 2.2）。这是保证内容精细度的核心。
 4. 颗粒度要求：细分小节的“内容锚点 (content_anchors)”必须极度具体，必须绑定 <Context> 中具体的实验数据、算法名称或需要填补的文献 Gap，杜绝泛泛而谈。
-5. 语言规范：输出的标题等内容严格使用${language}的语言，保持冷峻、客观的顶刊学术语调。总字数控制在顶刊常规标准（约 4000-8000 字）。严禁混入其他语言词句（专有名词/标准缩写除外）。
+5. 语言规范：输出的标题等内容严格使用${language}的语言，保持冷峻、客观的顶刊学术语调。总字数控制在顶刊常规标准（约 4000-8000 字）。
 6. 格式红线 (Critical)：必须且只能输出一个合法的 JSON 数组 (Array)。绝对禁止任何前言后语、解释性文字，绝对禁止使用 Markdown 代码块（如 ```json）包裹！
 </Rules>
 
@@ -136,8 +136,7 @@ ${writing_guidance_catalog}
   - 关键词（不编号，标签名称按 language 自动切换）
   同时，0章节通常不需要引用前文，`required_section_ids` 应优先为 []。
 5. 写作指导路由 (Writing Guidance Routing)：你必须为每个小节从 `<Writing_Guidance_Catalog>` 中选择最匹配的 `selected_guidance_key`（若无匹配则填 `none`），并给出 `guidance_reason` 简述选择原因。
-6. 语言规范：所有字段值必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
-7. 格式红线 (Critical)：必须且只能输出完全合法的 JSON 对象。绝对禁止任何前言后语、解释性文字，绝对禁止使用 Markdown 代码块（如 ```json）包裹！
+6. 格式红线 (Critical)：必须且只能输出完全合法的 JSON 对象。绝对禁止任何前言后语、解释性文字，绝对禁止使用 Markdown 代码块（如 ```json）包裹！
 </Rules>
 
 <JSON_Schema>
@@ -254,8 +253,7 @@ ${selected_writing_guidance}
   - 仅当 `${is_zero_chapter}` 为 `false` 且当前撰写的是该大章节的**第一节**（即 `${sub_chapter_id}` 以 `.1` 结尾，如 `3.1`），你**必须**在输出小节内容前，先在第一行输出大章节标题 `## ${major_chapter_id}.${chapter_header_title}`。
   - 如果 `<Writing_Target>` 中提供了专用总起句 `${chapter_header_lead}`，你必须在 `## 大标题` 与 `### 小标题` 之间输出该总起句作为独立段落。
   - 如果不是第一节（如 `.2`, `.3`），则无需上述操作。
-7. 语言规范 (Language Consistency - Critical)：全文必须严格使用${language}输出，禁止中英混杂（必要专有名词/标准缩写除外）。
-8. 格式红线 (Output Format - Critical)：
+7. 格式红线 (Output Format - Critical)：
    - **直接且仅输出**纯 Markdown 正文文本。
   - 除了触发【规则5】的情况外，默认第一行必须是当前小节的标题（即 `### ${sub_chapter_id} ${sub_title}`）。
    - **绝对禁止**输出 JSON 格式，**绝对禁止**使用 Markdown 代码块符号（如 ```markdown 或 ```）包裹全文。
@@ -280,7 +278,7 @@ Macro-level Planning (Major Sections): You must add a **Chapter 0 (Front Matter)
 Dynamic Writing Strategy (Writing Order): Real academic writing is usually non-linear (e.g., first anchor Methods and Results, then deduce Discussion, and finally package Introduction). Please assign a `writing_order` (an integer starting from 1, non-repeating) to each major section, representing the most reasonable writing sequence.
 Micro-level In-depth Analysis (Sub-sections): Within each major section, it must be disassembled into logically rigorous sub-sections (e.g., 2.1, 2.2). This is the core to ensure content precision.
 Granularity Requirement: The "content_anchors" of the sub-sections must be extremely specific, and must be bound to the specific experimental data, algorithm names, or literature gaps that need to be filled in <Context>. Generalizations are strictly prohibited.
-Language Specification: The output titles and other content must strictly use the language of ${language}, maintaining a cold, objective top-tier academic tone. The total word count is controlled at the conventional standard of top-tier journals (about 4000-8000 words). Do not mix multiple languages in one output (except proper nouns and standard abbreviations).
+Language Specification: The output titles and other content must strictly use the language of ${language}, maintaining a cold, objective top-tier academic tone. The total word count is controlled at the conventional standard of top-tier journals (about 4000-8000 words).
 Format Red Line (Critical): Must and can only output a legal JSON array (Array). Absolutely no preamble or postscript, explanatory text, and absolutely no use of Markdown code blocks (e.g, ```json) to wrap!
 </Rules>
 <JSON_Schema>
@@ -381,7 +379,6 @@ Previous text dependency (Critical): Select the previous `sub_chapter_id` that t
 Logical Red Line (Time-Travel Ban): The writing_order of the cited previous sub-section must be strictly less than ${current_writing_order} of the current major section! Citing unwritten or irrelevant sections is strictly prohibited. Use [] if no reference is needed.
 Chapter 0 Special Rule (Front Matter): If `${current_major_id}` is `0`, the paragraph blueprint must explicitly cover four blocks: non-numbered paper title, author/affiliation placeholders, non-numbered abstract, and non-numbered keywords. For chapter 0, `required_section_ids` should normally be [].
 Writing Guidance Routing: For each sub-section, you must choose `selected_guidance_key` from `<Writing_Guidance_Catalog>` (or `none` if no match), and provide `guidance_reason`.
-Language Consistency (Critical): All field values must be in ${language}; do not mix multiple languages (except proper nouns and standard abbreviations).
 Format Red Line (Critical): Must and can only output a completely legal JSON object. Absolutely no preamble or postscript, explanatory text, and absolutely no use of Markdown code blocks (e.g, ```json) to wrap!
 </Rules>
 <JSON_Schema>
@@ -461,7 +458,6 @@ Evidence Anchoring (Evidence): Logic is as solid as a rock. Any claim or compara
 Guidance Compliance: If selected writing guidance is provided, you must prioritize its structural and rhetorical requirements and merge them with the current blueprint.
 Blueprint Execution and Hierarchy Deepening (Structure & Hierarchy): Strictly execute the [Paragraph-level Writing Blueprint] in order. When writing the current sub-section, if the logic is complex and involves multiple parallel modules or sub-experiments, you are allowed and encouraged to independently generate third-level headings (e.g, `#### ${sub_chapter_id}.1 Core Mechanism`, `#### ${sub_chapter_id}.2 Evaluation Indicators`, etc.) to enhance readability.
 Figure Suggestion Reservation (Figure Placeholder): If during the writing process, you think that a data comparison, architectural description, or mechanism principle explanation extremely requires visual assistance (charts), please use 【Figure Suggestion: Write the specific chart content, horizontal and vertical coordinate requirements, or schematic structure here】 as a placeholder in an independent paragraph at that location to remind subsequent typesetting.
-Language Consistency (Critical): The full subsection must be written only in ${language}. Do not mix other languages, except unavoidable proper nouns and standard abbreviations.
 Chapter 0 Front-Matter Protocol (Critical):
 If `${is_zero_chapter}` is `true`, you must output non-numbered front matter in fixed order:
 1) `# Paper Title`
@@ -485,7 +481,7 @@ Absolutely no inclusion of any preamble or postscript (such as "Do you need me t
 
 PROMPT_OVERALL_REVIEWER = Template("""
 <Role>总审稿师 (Overall Reviewer)</Role>
-<Task>你需要读取 overall_review 规则，并先判断每个大章节是否需要重写；仅对需要重写的大章节制定审稿计划（上下文与 review 规则文件）。</Task>
+<Task>你需要读取 overall_review 规则，并为每个大章节制定审稿计划：决定该大章节审稿师需要的上下文和应使用的 review 规则文件。</Task>
 
 <Paper_Context>
 研究题目：${topic}
@@ -506,13 +502,10 @@ ${review_guidance_catalog}
 </Review_Guidance_Catalog>
 
 <Rules>
-1. 必须覆盖每个大章节，输出对应审稿决策与计划。
-2. 为每个大章节先给出 `need_rewrite`（是否需要进入大章节细审）和 `rewrite_rationale`（理由）。
-3. 当 `need_rewrite=true` 时，必须指定：required_context_section_ids、review_guidance_keys、review_focus。
-4. 当 `need_rewrite=false` 时，required_context_section_ids 可为空数组，review_guidance_keys 可为空数组，review_focus 简述无需重写原因。
-5. review_guidance_keys 必须来自 Review_Guidance_Catalog，且不得包含 overall_review 本身。
-6. 语言规范：所有字段值必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
-7. 仅输出 JSON，不得附加任何解释。
+1. 必须覆盖每个大章节，输出对应审稿计划。
+2. 为每个大章节指定：required_context_section_ids、review_guidance_keys、review_focus。
+3. review_guidance_keys 必须来自 Review_Guidance_Catalog，且不得包含 overall_review 本身。
+4. 仅输出 JSON，不得附加任何解释。
 </Rules>
 
 <JSON_Schema>
@@ -527,13 +520,11 @@ ${review_guidance_catalog}
         "properties": {
           "major_chapter_id": { "type": "string" },
           "major_title": { "type": "string" },
-          "need_rewrite": { "type": "boolean" },
-          "rewrite_rationale": { "type": "string" },
           "required_context_section_ids": { "type": "array", "items": { "type": "string" } },
           "review_guidance_keys": { "type": "array", "items": { "type": "string" } },
           "review_focus": { "type": "string" }
         },
-        "required": ["major_chapter_id", "major_title", "need_rewrite", "rewrite_rationale", "required_context_section_ids", "review_guidance_keys", "review_focus"],
+        "required": ["major_chapter_id", "major_title", "required_context_section_ids", "review_guidance_keys", "review_focus"],
         "additionalProperties": false
       }
     }
@@ -576,8 +567,7 @@ ${review_guidance_payload}
 3. 可执行性要求：每条问题必须包含“问题描述、证据、影响、修复策略”，避免空泛建议。
 4. 一致性要求：`sections_to_revise.sub_chapter_id` 必须来自输入草稿中真实存在的小节 ID。
 5. 模块规则绑定：对每个需修改小节，必须从 `Review_Guidance_Catalog` 选择一个最匹配的 `applied_review_guidance_key`（例如 methods_review），并据此给出问题与修复策略。
-6. 语言规范：所有字段值必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
-7. 格式红线：必须且只能输出合法 JSON，不允许任何额外说明文本，不允许 Markdown 代码块。
+6. 格式红线：必须且只能输出合法 JSON，不允许任何额外说明文本，不允许 Markdown 代码块。
 </Rules>
 
 <JSON_Schema>
@@ -666,14 +656,13 @@ ${research_gaps}
 3. 输出必须是完整可替换的小节 Markdown 正文，不得输出 JSON。
 4. 禁止无依据编造数据；若缺失精确数值，使用审慎表述并保持逻辑闭环。
 5. 第0章节约束：若 `sub_chapter_id` 以 `0.` 开头，保持无编号前置信息格式，不得生成编号标题。
-6. 语言规范：重写全文必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
-7. 非0章节默认第一行为 `### ${sub_chapter_id} ${sub_title}`（除非该小节原文已使用更合适且一致的标题形式）。
+6. 非0章节默认第一行为 `### ${sub_chapter_id} ${sub_title}`（除非该小节原文已使用更合适且一致的标题形式）。
 </Rules>
 """)
 
 PROMPT_OVERALL_REVIEWER_EN = Template("""
 <Role>Overall Reviewer</Role>
-<Task>Read overall_review rules, decide whether each major chapter needs rewriting, and then produce detailed review plans only for chapters that need rewrite.</Task>
+<Task>Read overall_review rules and produce chapter-level review plans specifying required context and selected review files for each major chapter.</Task>
 
 <Paper_Context>
 Topic: ${topic}
@@ -694,13 +683,10 @@ ${review_guidance_catalog}
 </Review_Guidance_Catalog>
 
 <Rules>
-1. You must output one decision record for each major chapter.
-2. For each major chapter, provide `need_rewrite` and `rewrite_rationale` first.
-3. If `need_rewrite=true`, specify required_context_section_ids, review_guidance_keys, and review_focus for downstream major reviewer.
-4. If `need_rewrite=false`, required_context_section_ids and review_guidance_keys can be empty arrays, and review_focus should briefly explain why rewrite is unnecessary.
-5. review_guidance_keys must come from catalog and must not include overall_review.
-6. Language consistency: all field values must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
-7. Output valid JSON only.
+1. You must output one review plan for each major chapter.
+2. Each plan must specify required_context_section_ids, review_guidance_keys, and review_focus.
+3. review_guidance_keys must come from catalog and must not include overall_review.
+4. Output valid JSON only.
 </Rules>
 
 <JSON_Schema>
@@ -715,13 +701,11 @@ ${review_guidance_catalog}
         "properties": {
           "major_chapter_id": { "type": "string" },
           "major_title": { "type": "string" },
-          "need_rewrite": { "type": "boolean" },
-          "rewrite_rationale": { "type": "string" },
           "required_context_section_ids": { "type": "array", "items": { "type": "string" } },
           "review_guidance_keys": { "type": "array", "items": { "type": "string" } },
           "review_focus": { "type": "string" }
         },
-        "required": ["major_chapter_id", "major_title", "need_rewrite", "rewrite_rationale", "required_context_section_ids", "review_guidance_keys", "review_focus"],
+        "required": ["major_chapter_id", "major_title", "required_context_section_ids", "review_guidance_keys", "review_focus"],
         "additionalProperties": false
       }
     }
@@ -764,8 +748,7 @@ ${review_guidance_payload}
 3. Every issue must include problem, evidence, impact, and fix strategy.
 4. Each `sub_chapter_id` must exist in the provided draft.
 5. For each revised subsection, choose one `applied_review_guidance_key` from `Review_Guidance_Catalog` and align the critique to that rule.
-6. Language consistency: all field values must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
-7. Output must be valid JSON only. No markdown fences, no extra text.
+6. Output must be valid JSON only. No markdown fences, no extra text.
 </Rules>
 
 <JSON_Schema>
@@ -852,8 +835,7 @@ ${research_gaps}
 3. Output pure markdown subsection text only (no JSON, no fences).
 4. Do not fabricate unsupported numeric claims.
 5. If `sub_chapter_id` starts with `0.`, keep non-numbered front-matter format.
-6. Language consistency: the full rewritten subsection must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
-7. For non-zero sections, default first line should be `### ${sub_chapter_id} ${sub_title}` unless the original format is more consistent.
+6. For non-zero sections, default first line should be `### ${sub_chapter_id} ${sub_title}` unless the original format is more consistent.
 </Rules>
 """)
 
@@ -873,7 +855,6 @@ ${search_results}
 2. 必须包含字段：标题、作者、年份、摘要、来源、链接（若缺失则标注“未提供”）。
 3. 先给出 5-8 条最相关文献，再给出其余候选文献。
 4. 禁止编造不存在的信息。
-5. 语言规范：全文必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -893,7 +874,6 @@ ${search_results}
 2. Each record must include: title, authors, year, abstract, source, link (or "N/A").
 3. Start with 5-8 most relevant works, then list additional candidates.
 4. Do not fabricate details.
-5. Language consistency: all output must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 
@@ -916,7 +896,6 @@ ${references_material}
 2. 至少包含：研究现状概览、关键研究空白、潜在贡献点、可验证的研究问题/假设。
 3. 研究空白要与贡献点一一映射。
 4. 禁止无依据断言。
-5. 语言规范：全文必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -939,7 +918,6 @@ ${references_material}
 2. Include: current landscape, key gaps, potential contributions, and testable research questions/hypotheses.
 3. Map each contribution to one or more gaps.
 4. No unsupported claims.
-5. Language consistency: all output must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 
@@ -966,7 +944,6 @@ ${research_gaps}
 4. 避免过宽泛（如仅“AI”“machine learning”）与过狭隘（仅一个极长专有名词串）。
 5. 尽量覆盖互补角度：方法、任务、数据/场景、评估目标。
 6. 禁止编造不存在的具体数据集名称或论文名称。
-7. 语言规范：所有 query 必须严格使用${language}（必要国际通用术语除外），禁止中英混杂。
 </Rules>
 
 <JSON_Schema>
@@ -1006,7 +983,6 @@ ${research_gaps}
 5. **Content:** Combine the research object and the primary method. Do not include evaluation details or scenario descriptions in the query string itself.
 6. Avoid too broad terms (e.g., only "AI") and too narrow over-specified strings.
 7. Do not fabricate dataset or paper names.
-8. Language consistency: each query must be in ${language}; do not mix multiple languages in a single query (except proper nouns and standard abbreviations).
 </Rules>
 
 <JSON_Schema>
@@ -1043,7 +1019,6 @@ ${research_gaps}
 2. 标题应同时体现研究对象、方法核心和应用场景。
 3. 中文标题建议 16-36 字；英文标题建议 8-22 词。
 4. 禁止输出“未提供”“待定”等占位词。
-5. 语言规范：标题必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -1068,7 +1043,6 @@ ${research_gaps}
 2. The title should cover problem object, method core, and application scenario.
 3. Prefer 8-22 words for English titles.
 4. Do not output placeholders like TBD/Unknown/Not provided.
-5. Language consistency: the title must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 
@@ -1094,7 +1068,6 @@ ${sub_sections_info}
 2. 标题要学术、清晰、与小节结构一致，避免空泛口号。
 3. 总起句 1-2 句，概括本章逻辑线路，不重复小节细节。
 4. 与全文主题和用户要求保持一致。
-5. 语言规范：两个字段必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -1120,7 +1093,6 @@ Existing Materials: ${existing_material}
 2. Title should be academic, specific, and aligned with subsection structure.
 3. Lead sentence should be 1-2 sentences summarizing chapter logic, not subsection details.
 4. Keep consistent with topic and user requirements.
-5. Language consistency: both fields must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 
@@ -1143,7 +1115,6 @@ ${major_sections}
 1. 仅输出 JSON 对象。
 2. 必须包含字段：need_rewrite(boolean), priority, issues(array), rewrite_guidance(object)。
 3. 当标题/总起句与章节内容一致且清晰时，need_rewrite=false。
-4. 语言规范：所有字段值必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -1166,7 +1137,6 @@ ${major_sections}
 1. Output JSON object only.
 2. Required fields: need_rewrite(boolean), priority, issues(array), rewrite_guidance(object).
 3. If title/lead are clear and aligned with chapter content, set need_rewrite=false.
-4. Language consistency: all field values must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 
@@ -1190,7 +1160,6 @@ ${review_guidance}
 1. 仅输出 JSON 对象：{"chapter_header_title":"...","chapter_header_lead":"..."}。
 2. 标题与总起句必须响应审稿意见并与章节内容一致。
 3. 总起句控制在 1-2 句。
-4. 语言规范：两个字段必须严格使用${language}，禁止中英混杂（必要专有名词/标准缩写除外）。
 </Rules>
 """)
 
@@ -1214,7 +1183,6 @@ Existing Materials: ${existing_material}
 1. Output JSON object only: {"chapter_header_title":"...","chapter_header_lead":"..."}.
 2. Title and lead must address review feedback and align with chapter content.
 3. Keep lead sentence to 1-2 sentences.
-4. Language consistency: both fields must be in ${language}, without mixed-language output (except proper nouns and standard abbreviations).
 </Rules>
 """)
 

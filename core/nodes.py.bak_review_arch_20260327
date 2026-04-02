@@ -147,19 +147,6 @@ def _coerce_list_or_none(value: Any) -> Optional[list]:
     return None
 
 
-def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    text = str(value).strip().lower()
-    if text in {"true", "1", "yes", "y", "是"}:
-        return True
-    if text in {"false", "0", "no", "n", "否"}:
-        return False
-    return default
-
-
 def _extract_openalex_abstract(item: Dict[str, Any]) -> str:
     # OpenAlex commonly stores abstracts in inverted index format.
     inverted = item.get("abstract_inverted_index")
@@ -893,8 +880,6 @@ def node_overall_review(state: PaperWriterState) -> PaperWriterState:
             state.major_review_plans.append({
                 "major_chapter_id": major.get("major_chapter_id", ""),
                 "major_title": major.get("major_title", ""),
-                "need_rewrite": True,
-                "rewrite_rationale": "总审稿输出异常，回退为全量大章节复审",
                 "required_context_section_ids": major.get("sub_section_ids", []),
                 "review_guidance_keys": [k for k in review_library.keys() if k != "overall_review"],
                 "review_focus": "默认全量审稿"
@@ -903,53 +888,10 @@ def node_overall_review(state: PaperWriterState) -> PaperWriterState:
         return state
 
     state.review_summary = str(response_dict.get("global_summary", "")).strip()
-    raw_plans = response_dict.get("major_review_plans", [])
-    if not isinstance(raw_plans, list):
-        raw_plans = []
-
-    major_id_to_meta = {
-        str(item.get("major_chapter_id", "")).strip(): item
-        for item in major_sections
-        if str(item.get("major_chapter_id", "")).strip()
-    }
-
-    normalized_plans = []
-    for plan in raw_plans:
-        if not isinstance(plan, dict):
-            continue
-        major_id = str(plan.get("major_chapter_id", "")).strip()
-        if not major_id:
-            continue
-        major_meta = major_id_to_meta.get(major_id, {})
-
-        required_context_ids = plan.get("required_context_section_ids", [])
-        if not isinstance(required_context_ids, list):
-            required_context_ids = []
-        required_context_ids = [
-            str(x).strip() for x in required_context_ids
-            if str(x).strip()
-        ]
-
-        raw_review_keys = plan.get("review_guidance_keys", [])
-        if not isinstance(raw_review_keys, list):
-            raw_review_keys = []
-        review_keys = []
-        for key in raw_review_keys:
-            key_str = str(key).strip()
-            if key_str and key_str != "overall_review" and key_str in review_library and key_str not in review_keys:
-                review_keys.append(key_str)
-
-        normalized_plans.append({
-            "major_chapter_id": major_id,
-            "major_title": str(plan.get("major_title", "")).strip() or str(major_meta.get("major_title", "")).strip(),
-            "need_rewrite": _coerce_bool(plan.get("need_rewrite", True), default=True),
-            "rewrite_rationale": str(plan.get("rewrite_rationale", "")).strip(),
-            "required_context_section_ids": required_context_ids,
-            "review_guidance_keys": review_keys,
-            "review_focus": str(plan.get("review_focus", "")).strip(),
-        })
-
-    state.major_review_plans = normalized_plans
+    plans = response_dict.get("major_review_plans", [])
+    if not isinstance(plans, list):
+        plans = []
+    state.major_review_plans = plans
 
     if state.review_summary:
         print(f"[INFO] [Overall Review Summary] {state.review_summary}")
@@ -967,22 +909,10 @@ def node_major_review(state: PaperWriterState) -> PaperWriterState:
     valid_ids = {sec.get("sub_chapter_id", "") for sec in all_sections}
     merged_review_items = []
     major_summaries = []
-    reviewed_major_count = 0
 
     for plan in getattr(state, "major_review_plans", []):
         major_id = str(plan.get("major_chapter_id", "")).strip()
         major_title = str(plan.get("major_title", "")).strip()
-        need_rewrite = _coerce_bool(plan.get("need_rewrite", True), default=True)
-        rewrite_rationale = str(plan.get("rewrite_rationale", "")).strip()
-
-        if not need_rewrite:
-            msg = f"{major_id} {major_title}: 总审稿判定无需重写"
-            if rewrite_rationale:
-                msg = f"{msg}（{rewrite_rationale}）"
-            major_summaries.append(msg)
-            continue
-
-        reviewed_major_count += 1
         required_context_ids = plan.get("required_context_section_ids", []) or []
         review_keys = plan.get("review_guidance_keys", []) or []
         review_focus = str(plan.get("review_focus", "")).strip()
@@ -1062,16 +992,6 @@ def node_major_review(state: PaperWriterState) -> PaperWriterState:
                         "issues": header_data.get("issues", []),
                         "rewrite_guidance": header_data.get("rewrite_guidance", {}),
                     })
-
-    if reviewed_major_count == 0:
-        state.reviewed_sections = []
-        state.passed = True
-        if major_summaries:
-            state.review_summary = "\n".join(major_summaries)
-        else:
-            state.review_summary = "总审稿未选择任何需要重写的大章节。"
-        print("[INFO] [MajorReview] 总审稿未指派需要细审的大章节，直接判定通过。")
-        return state
 
     state.reviewed_sections = merged_review_items
     state.passed = len(merged_review_items) == 0
