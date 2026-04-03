@@ -9,7 +9,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from core.state import resolve_inputs_path
+from core.state import resolve_inputs_path, build_output_paths, find_latest_checkpoint_for_resume
+from core.project_paths import (
+  project_path,
+  absolute_path_in_project,
+  relative_to_project,
+  list_projects,
+  get_active_project_name,
+  set_active_project,
+  get_active_project_root,
+)
 
 try:
     from rich.console import Console
@@ -25,25 +34,199 @@ except Exception:
 
 HOST = "127.0.0.1"
 PORT = 8765
-ACTION_FILE = "completed_history/workflow_actions.json"
-RUNTIME_FILE = "completed_history/workflow_runtime.json"
-EVENTS_FILE = "completed_history/workflow_events.jsonl"
-METRICS_FILE = "completed_history/workflow_metrics.json"
-EDITABLE_INPUT_FILES = [
+EDITABLE_INPUT_REL_FILES = [
   "inputs/existing_material.md",
   "inputs/existing_sections.md",
   "inputs/related_works.md",
   "inputs/revision_requests.md",
-  "inputs/user_requirements.md",
+  "inputs/write_requests.md",
 ]
 
 
+def get_editable_input_files() -> list[str]:
+  return [absolute_path_in_project(p) for p in EDITABLE_INPUT_REL_FILES]
+
+
+def get_editable_input_display_files() -> list[str]:
+  return list(EDITABLE_INPUT_REL_FILES)
+
+
+def _action_file() -> str:
+    return project_path("completed_history", "workflow_actions.json")
+
+
+def _runtime_file() -> str:
+    return project_path("completed_history", "workflow_runtime.json")
+
+
+def _events_file() -> str:
+    return project_path("completed_history", "workflow_events.jsonl")
+
+
+def _metrics_file() -> str:
+    return project_path("completed_history", "workflow_metrics.json")
+
+
 def _latest_checkpoint_path() -> str:
-    files = glob.glob("completed_history/*_checkpoint.json")
+    files = glob.glob(project_path("completed_history", "*_checkpoint.json"))
     if not files:
         return ""
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files[0]
+
+
+def _safe_checkpoint_token(text: str) -> str:
+  return "".join(ch for ch in str(text or "") if ch not in '\\/*?:"<>|').replace(" ", "_")
+
+
+def _try_parse_json_payload(text: str):
+  raw = str(text or "").strip()
+  if not raw:
+    return None
+
+  candidates = [
+    raw,
+    raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip(),
+  ]
+  for candidate in candidates:
+    if not candidate:
+      continue
+    try:
+      return json.loads(candidate)
+    except Exception:
+      continue
+
+  for pattern in [r"\[.*\]", r"\{.*\}"]:
+    m = re.search(pattern, raw, flags=re.DOTALL)
+    if not m:
+      continue
+    try:
+      return json.loads(m.group(0))
+    except Exception:
+      continue
+  return None
+
+
+def _coerce_outline_list(data: dict) -> list[dict]:
+  if not isinstance(data, dict):
+    return []
+
+  for key in ["outline", "architect_outline", "architecture_outline", "paper_outline", "chapters", "data"]:
+    raw = data.get(key)
+
+    if isinstance(raw, list):
+      return [x for x in raw if isinstance(x, dict)]
+
+    if isinstance(raw, str):
+      parsed = _try_parse_json_payload(raw)
+      if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)]
+      if isinstance(parsed, dict):
+        for nested_key in ["outline", "architect_outline", "architecture_outline", "paper_outline", "chapters", "data"]:
+          nested = parsed.get(nested_key)
+          if isinstance(nested, list):
+            return [x for x in nested if isinstance(x, dict)]
+
+    if isinstance(raw, dict):
+      for nested_key in ["outline", "architect_outline", "architecture_outline", "paper_outline", "chapters", "data"]:
+        nested = raw.get(nested_key)
+        if isinstance(nested, list):
+          return [x for x in nested if isinstance(x, dict)]
+
+  return []
+
+
+def _checkpoint_selection_score(path: str, model: str, topic: str) -> tuple[int, float]:
+  score = 0
+  try:
+    mtime = float(os.path.getmtime(path))
+  except Exception:
+    mtime = 0.0
+
+  filename = os.path.basename(str(path or "")).lower()
+  safe_model = _safe_checkpoint_token(model).lower()
+  safe_topic = _safe_checkpoint_token(topic if str(topic or "").strip() else "auto_title_pending").lower()
+  if safe_model and safe_model in filename:
+    score += 15
+  if safe_topic and safe_topic in filename:
+    score += 12
+
+  try:
+    with open(path, "r", encoding="utf-8-sig") as f:
+      payload = json.load(f)
+  except Exception:
+    return score, mtime
+
+  phase = str(payload.get("workflow_phase", "")).strip().lower()
+  if phase == "done":
+    score += 80
+  elif phase in {"reviewing", "review_pending"}:
+    score += 60
+  elif phase == "drafting":
+    score += 45
+  elif phase == "pre_research":
+    score += 15
+
+  outline = _coerce_outline_list(payload if isinstance(payload, dict) else {})
+  if outline:
+    score += 80
+
+  completed = payload.get("completed_sections", []) if isinstance(payload, dict) else []
+  if isinstance(completed, list):
+    score += min(60, len([x for x in completed if isinstance(x, dict)]) * 6)
+
+  if bool(payload.get("architecture_passed", False)):
+    score += 20
+
+  queries = payload.get("search_queries", []) if isinstance(payload, dict) else []
+  if isinstance(queries, list) and queries:
+    score += 8
+
+  return score, mtime
+
+
+def _select_checkpoint_for_snapshot(inputs_data: dict, fallback_topic: str, fallback_model: str, fallback_language: str) -> str:
+  model = str((inputs_data or {}).get("model", fallback_model) or "").strip()
+  topic = str((inputs_data or {}).get("topic", fallback_topic) or "").strip()
+  _ = str((inputs_data or {}).get("language", fallback_language) or "").strip() or "English"
+
+  candidates: list[str] = []
+  seen: set[str] = set()
+
+  def _add(path: str) -> None:
+    p = str(path or "").strip()
+    if (not p) or (not os.path.exists(p)):
+      return
+    norm = os.path.normcase(os.path.normpath(p))
+    if norm in seen:
+      return
+    seen.add(norm)
+    candidates.append(p)
+
+  if model:
+    try:
+      _, exact_checkpoint = build_output_paths(model, topic, "en")
+      _add(exact_checkpoint)
+    except Exception:
+      pass
+
+    try:
+      _add(find_latest_checkpoint_for_resume(model, "en"))
+    except Exception:
+      pass
+
+  safe_topic = _safe_checkpoint_token(topic if topic else "auto_title_pending")
+  if safe_topic:
+    for p in sorted(glob.glob(project_path("completed_history", f"*_{safe_topic}_en_checkpoint.json")), key=lambda x: os.path.getmtime(x), reverse=True)[:8]:
+      _add(p)
+
+  for p in sorted(glob.glob(project_path("completed_history", "*_checkpoint.json")), key=lambda x: os.path.getmtime(x), reverse=True)[:5]:
+    _add(p)
+
+  if not candidates:
+    return ""
+
+  return max(candidates, key=lambda p: _checkpoint_selection_score(p, model=model, topic=topic))
 
 
 def _safe_int(value, default=0):
@@ -82,14 +265,64 @@ def _is_safe_rel_path(path: str) -> bool:
 
 
 def _is_allowed_editable_input_file(path: str) -> bool:
-    p = str(path or "").strip().replace("\\", "/")
-    return p in EDITABLE_INPUT_FILES
+  try:
+    abs_p = str(Path(path).resolve())
+  except Exception:
+    return False
+  return abs_p in {str(Path(x).resolve()) for x in get_editable_input_files()}
 
 
 def _write_action(payload: dict) -> None:
-    os.makedirs("completed_history", exist_ok=True)
-    with open(ACTION_FILE, "w", encoding="utf-8") as f:
+  action_file = _action_file()
+  os.makedirs(os.path.dirname(action_file), exist_ok=True)
+  with open(action_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def list_available_projects() -> list[str]:
+  return list_projects()
+
+
+def get_current_project_name() -> str:
+  return get_active_project_name()
+
+
+def open_or_create_project(project_name: str) -> dict:
+  try:
+    name = set_active_project(project_name)
+    return {
+      "ok": True,
+      "project_name": name,
+      "project_root": str(get_active_project_root()),
+    }
+  except Exception as e:
+    return {"ok": False, "message": str(e)}
+
+
+def open_or_create_project_by_folder(folder_path: str, project_name: str = "") -> dict:
+  raw_folder = str(folder_path or "").strip().strip('"')
+  if not raw_folder:
+    return {"ok": False, "message": "请先选择项目文件夹"}
+
+  try:
+    folder = Path(raw_folder).expanduser()
+    if not folder.is_absolute():
+      folder = (Path.cwd() / folder).resolve()
+    else:
+      folder = folder.resolve()
+
+    if folder.exists() and (not folder.is_dir()):
+      return {"ok": False, "message": "目标路径不是文件夹"}
+
+    display_name = str(project_name or "").strip() or folder.name or "default"
+    name = set_active_project(display_name, root_path=str(folder))
+    return {
+      "ok": True,
+      "project_name": name,
+      "project_root": str(get_active_project_root()),
+    }
+  except Exception as e:
+    return {"ok": False, "message": str(e)}
 
 
 def _read_inputs_payload() -> dict:
@@ -122,11 +355,12 @@ def _write_inputs_payload(text: str) -> dict:
 
 
 def _read_workflow_logs(mode: str, limit: int) -> list[dict]:
-    if not os.path.exists(EVENTS_FILE):
+    events_file = _events_file()
+    if not os.path.exists(events_file):
         return []
     rows: list[dict] = []
     try:
-        with open(EVENTS_FILE, "r", encoding="utf-8") as f:
+        with open(events_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
     except Exception:
         return []
@@ -147,10 +381,11 @@ def _read_workflow_logs(mode: str, limit: int) -> list[dict]:
 
 
 def _read_metrics_snapshot() -> dict:
-    if not os.path.exists(METRICS_FILE):
+    metrics_file = _metrics_file()
+    if not os.path.exists(metrics_file):
         return {"steps": {}, "totals": {"step_calls": 0, "total_step_seconds": 0.0}, "top_steps": []}
     try:
-        with open(METRICS_FILE, "r", encoding="utf-8") as f:
+        with open(metrics_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         steps = data.get("steps", {}) if isinstance(data, dict) else {}
         totals = data.get("totals", {}) if isinstance(data, dict) else {}
@@ -187,10 +422,11 @@ def _read_runtime_snapshot() -> dict:
         "runtime_time": "-",
         "runtime_interaction_mode": "-",
     }
-    if not os.path.exists(RUNTIME_FILE):
+    runtime_file = _runtime_file()
+    if not os.path.exists(runtime_file):
         return payload
     try:
-        with open(RUNTIME_FILE, "r", encoding="utf-8") as f:
+        with open(runtime_file, "r", encoding="utf-8") as f:
             raw = json.load(f)
         return {
             "runtime_status": str(raw.get("status", "unknown")),
@@ -221,11 +457,13 @@ def _read_fallback_inputs() -> tuple[str, str, str]:
 def _read_state_snapshot() -> dict:
     runtime = _read_runtime_snapshot()
     metrics = _read_metrics_snapshot()
-    checkpoint = _latest_checkpoint_path()
+    project_name = get_active_project_name()
+    project_root = str(get_active_project_root())
     fallback_topic, fallback_model, fallback_language = _read_fallback_inputs()
     inputs_meta = _read_inputs_payload()
     inputs_path = str(inputs_meta.get("path", resolve_inputs_path()))
     inputs_data = inputs_meta.get("data", {}) if isinstance(inputs_meta.get("data", {}), dict) else {}
+    checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
 
     if not checkpoint:
         return {
@@ -245,6 +483,8 @@ def _read_state_snapshot() -> dict:
             "pending_action_message": "",
             "paper_outputs": [],
             "workflow_metrics": metrics,
+            "project_name": project_name,
+            "project_root": project_root,
             **runtime,
         }
 
@@ -258,13 +498,42 @@ def _read_state_snapshot() -> dict:
             "checkpoint_path": checkpoint,
             "message": f"读取 checkpoint 失败: {e}",
             "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name": project_name,
+            "project_root": project_root,
             **runtime,
         }
 
-    completed_sections = data.get("completed_sections", []) or []
-    reviewed_sections = data.get("reviewed_sections", []) or []
-    outline = data.get("outline", [])
-    major_count = len(outline) if isinstance(outline, list) else 0
+    completed_sections_raw = data.get("completed_sections", []) or []
+    if isinstance(completed_sections_raw, dict):
+        completed_sections = [x for x in completed_sections_raw.values() if isinstance(x, dict)]
+    elif isinstance(completed_sections_raw, list):
+        completed_sections = [x for x in completed_sections_raw if isinstance(x, dict)]
+    else:
+        completed_sections = []
+
+    reviewed_sections_raw = data.get("reviewed_sections", []) or []
+    if isinstance(reviewed_sections_raw, dict):
+        reviewed_sections = [x for x in reviewed_sections_raw.values() if isinstance(x, dict)]
+    elif isinstance(reviewed_sections_raw, list):
+        reviewed_sections = [x for x in reviewed_sections_raw if isinstance(x, dict)]
+    else:
+        reviewed_sections = []
+
+    outline = _coerce_outline_list(data)
+    major_count = len(outline)
+
+    search_queries_raw = data.get("search_queries", [])
+    if isinstance(search_queries_raw, list):
+        search_queries = [str(x).strip() for x in search_queries_raw if str(x).strip()]
+    elif isinstance(search_queries_raw, str):
+        parsed_queries = _try_parse_json_payload(search_queries_raw)
+        if isinstance(parsed_queries, list):
+            search_queries = [str(x).strip() for x in parsed_queries if str(x).strip()]
+        else:
+            search_queries = []
+    else:
+        search_queries = []
+
     total_chars = sum(len(str((sec or {}).get("content", ""))) for sec in completed_sections)
     total_words = sum(_count_mixed_words(str((sec or {}).get("content", ""))) for sec in completed_sections)
 
@@ -277,39 +546,41 @@ def _read_state_snapshot() -> dict:
 
     paper_outputs = []
     for sec in completed_sections:
-      if not isinstance(sec, dict):
-        continue
-      paper_outputs.append(
-        {
-          "sub_chapter_id": str(sec.get("sub_chapter_id", "")),
-          "title": str(sec.get("title", "")),
-          "major_title": str(sec.get("major_title", "")),
-          "actual_order_index": _safe_int(sec.get("actual_order_index", 0), 0),
-          "content": str(sec.get("content", "")),
-        }
-      )
+        paper_outputs.append(
+            {
+                "sub_chapter_id": str(sec.get("sub_chapter_id", "")),
+                "title": str(sec.get("title", "")),
+                "major_title": str(sec.get("major_title", "")),
+                "actual_order_index": _safe_int(sec.get("actual_order_index", 0), 0),
+                "content": str(sec.get("content", "")),
+            }
+        )
     paper_outputs.sort(key=lambda x: _sub_id_sort_key(x.get("sub_chapter_id", "")))
 
+    raw_action_preferences = data.get("action_preferences", {})
+    action_preferences = raw_action_preferences if isinstance(raw_action_preferences, dict) else {}
+    raw_action_history = data.get("action_history", [])
+    action_history = [x for x in raw_action_history if isinstance(x, dict)] if isinstance(raw_action_history, list) else []
+
     planner_outputs = []
-    if isinstance(outline, list):
-      for major in outline:
+    for major in outline:
         if not isinstance(major, dict):
-          continue
+            continue
         major_id = str(major.get("major_chapter_id", ""))
         major_title = str(major.get("major_title", ""))
         for sub in (major.get("sub_sections", []) or []):
-          if not isinstance(sub, dict):
-            continue
-          planner_outputs.append({
-            "major_chapter_id": major_id,
-            "major_title": major_title,
-            "sub_chapter_id": str(sub.get("sub_chapter_id", "")),
-            "sub_title": str(sub.get("sub_title", "")),
-            "selected_guidance_key": str(sub.get("selected_guidance_key", "")),
-            "guidance_reason": str(sub.get("guidance_reason", "")),
-            "paragraph_blueprints_count": len(sub.get("paragraph_blueprints", []) or []),
-            "context_routing": sub.get("context_routing", {}),
-          })
+            if not isinstance(sub, dict):
+                continue
+            planner_outputs.append({
+                "major_chapter_id": major_id,
+                "major_title": major_title,
+                "sub_chapter_id": str(sub.get("sub_chapter_id", "")),
+                "sub_title": str(sub.get("sub_title", "")),
+                "selected_guidance_key": str(sub.get("selected_guidance_key", "")),
+                "guidance_reason": str(sub.get("guidance_reason", "")),
+                "paragraph_blueprints_count": len(sub.get("paragraph_blueprints", []) or []),
+                "context_routing": sub.get("context_routing", {}),
+            })
 
     return {
         "ok": True,
@@ -328,12 +599,20 @@ def _read_state_snapshot() -> dict:
         "review_round": _safe_int(data.get("review_round", 0), 0),
         "max_review_rounds": _safe_int(data.get("max_review_rounds", 0), 0),
         "passed": bool(data.get("passed", False)),
+        "architecture_passed": bool(data.get("architecture_passed", False)),
+        "architecture_force_continue": bool(data.get("architecture_force_continue", False)),
+        "architecture_review_round": _safe_int(data.get("architecture_review_round", 0), 0),
+        "pre_done_title": bool(data.get("pre_done_title", False)),
+        "pre_done_query_builder": bool(data.get("pre_done_query_builder", False)),
+        "pre_done_paper_search": bool(data.get("pre_done_paper_search", False)),
+        "pre_done_related_confirm": bool(data.get("pre_done_related_confirm", False)),
+        "pre_done_research_gaps": bool(data.get("pre_done_research_gaps", False)),
         "major_chapter_count": major_count,
         "completed_section_count": len(completed_sections),
         "pending_rewrite_count": len(reviewed_sections),
         "paper_search_limit": _safe_int(data.get("paper_search_limit", 0), 0),
-        "search_query_count": len(data.get("search_queries", []) or []),
-        "search_queries": data.get("search_queries", []) or [],
+        "search_query_count": len(search_queries),
+        "search_queries": search_queries,
         "current_node": str(data.get("current_node", "")),
         "current_major_chapter_id": str(data.get("current_major_chapter_id", "")),
         "current_sub_chapter_id": str(data.get("current_sub_chapter_id", "")),
@@ -344,18 +623,23 @@ def _read_state_snapshot() -> dict:
         "manual_revision_path": str(data.get("manual_revision_path", "inputs/revision_requests.md")),
         "pending_action": str(data.get("pending_action", "")),
         "pending_action_message": str(data.get("pending_action_message", "")),
+        "auto_apply_saved_actions": bool(data.get("auto_apply_saved_actions", True)),
+        "action_preferences": action_preferences,
+        "action_history": action_history[-40:],
         "total_chars": total_chars,
         "total_words": total_words,
         "top_major_word_stats": top_majors,
         "paper_outputs": paper_outputs,
-        "architect_outline": outline if isinstance(outline, list) else [],
+        "architect_outline": outline,
         "planner_outputs": planner_outputs,
         "overall_review_summary": str(data.get("review_summary", "")),
-        "overall_review_plans": data.get("major_review_plans", []) or [],
+        "overall_review_plans": data.get("major_review_plans", []) if isinstance(data.get("major_review_plans", []), list) else [],
         "major_review_items": reviewed_sections,
         "related_works_path": str(data.get("related_works_path", "inputs/related_works.md")),
-        "research_gap_output_path": str(data.get("research_gap_output_path", "outputs/research_gaps.md")),
+        "research_gap_output_path": str(data.get("research_gap_output_path", "inputs/research_gaps.md")),
         "workflow_metrics": metrics,
+        "project_name": project_name,
+        "project_root": project_root,
         **runtime,
     }
 
@@ -739,6 +1023,19 @@ HTML = """<!doctype html>
         return;
       }
 
+      if (action === 'set_architecture_force_continue') {
+        panel.innerHTML = '<b>架构审查仅剩中低优问题，是否人工放行？</b><br>' +
+          '<button class="btn" id="btn-arch-pass">放行并继续</button>' +
+          '<button class="btn" id="btn-arch-revise">不放行，继续修订</button>';
+        document.getElementById('btn-arch-pass').onclick = function() {
+          postAction({action: 'set_architecture_force_continue', value: true});
+        };
+        document.getElementById('btn-arch-revise').onclick = function() {
+          postAction({action: 'set_architecture_force_continue', value: false});
+        };
+        return;
+      }
+
       if (action === 'confirm_related_works') {
         panel.innerHTML = '<b>请先补充文献综述文件后继续</b><br>' +
           '<button class="btn" id="btn-preview-related">预览 related_works</button>' +
@@ -755,20 +1052,17 @@ HTML = """<!doctype html>
       if (action === 'enter_reviewing') {
         panel.innerHTML = '<b>进入审稿阶段前确认</b><br>' +
           '<label><input type="checkbox" id="load-req" checked> 加载自定义要求文件</label><br>' +
-          '<input class="input" id="req-path" value="inputs/user_requirements.md" placeholder="user_requirements 路径">' +
-          '<input class="input" id="manual-path" value="' + (state.manual_revision_path || 'inputs/revision_requests.md') + '" placeholder="人工改稿指令文件路径">' +
-          '<button class="btn" id="btn-preview-manual">预览 revision_requests</button>' +
+          '<input class="input" id="req-path" value="inputs/write_requests.md" placeholder="write_requests 路径">' +
+          '<button class="btn" id="btn-preview-manual">预览 revision_requests（固定路径）</button>' +
           '<button class="btn" id="btn-enter-review">确认进入审稿</button>';
         document.getElementById('btn-preview-manual').onclick = function() {
-          const mp = document.getElementById('manual-path').value || 'inputs/revision_requests.md';
-          loadFile(mp);
+          loadFile(state.manual_revision_path || 'inputs/revision_requests.md');
         };
         document.getElementById('btn-enter-review').onclick = function() {
           postAction({
             action: 'enter_reviewing',
             load_requirements: document.getElementById('load-req').checked,
-            requirements_path: document.getElementById('req-path').value || 'inputs/user_requirements.md',
-            manual_revision_path: document.getElementById('manual-path').value || 'inputs/revision_requests.md'
+            requirements_path: document.getElementById('req-path').value || 'inputs/write_requests.md'
           });
         };
         return;
@@ -947,15 +1241,17 @@ class Handler(BaseHTTPRequestHandler):
             path = str((q.get("path") or [""])[0])
             if not _is_safe_rel_path(path):
                 payload = {"ok": False, "message": "非法路径"}
-            elif not os.path.exists(path):
-                payload = {"ok": False, "message": "文件不存在"}
             else:
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    payload = {"ok": True, "content": content}
-                except Exception as e:
-                    payload = {"ok": False, "message": str(e)}
+                abs_path = absolute_path_in_project(path)
+                if not os.path.exists(abs_path):
+                    payload = {"ok": False, "message": "文件不存在"}
+                else:
+                    try:
+                        with open(abs_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        payload = {"ok": True, "content": content}
+                    except Exception as e:
+                        payload = {"ok": False, "message": str(e)}
 
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -967,7 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/editable-files"):
-            payload = {"ok": True, "items": EDITABLE_INPUT_FILES}
+            payload = {"ok": True, "items": get_editable_input_display_files()}
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -980,13 +1276,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/input-file"):
             q = parse_qs(parsed.query)
             path = str((q.get("path") or [""])[0])
-            if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(path)):
+            abs_path = absolute_path_in_project(path)
+            if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(abs_path)):
                 payload = {"ok": False, "message": "非法或不允许编辑的路径"}
-            elif not os.path.exists(path):
+            elif not os.path.exists(abs_path):
                 payload = {"ok": True, "path": path, "content": ""}
             else:
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(abs_path, "r", encoding="utf-8") as f:
                         payload = {"ok": True, "path": path, "content": f.read()}
                 except Exception as e:
                     payload = {"ok": False, "message": str(e)}
@@ -1056,7 +1353,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
 
-            if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(path)):
+            abs_path = absolute_path_in_project(path)
+            if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(abs_path)):
                 body = json.dumps({"ok": False, "message": "非法或不允许编辑的路径"}, ensure_ascii=False).encode("utf-8")
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1066,10 +1364,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             try:
-                folder = os.path.dirname(path)
+                folder = os.path.dirname(abs_path)
                 if folder:
                     os.makedirs(folder, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
+                with open(abs_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 body = json.dumps({"ok": True, "path": path}, ensure_ascii=False).encode("utf-8")
                 self.send_response(200)
@@ -1106,7 +1404,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         action = str(payload.get("action", "")).strip()
-        allowed = {"confirm_inputs_ready", "set_enable_search", "confirm_related_works", "enter_reviewing"}
+        allowed = {
+          "confirm_inputs_ready",
+          "set_enable_auto_title",
+          "set_enable_search",
+          "confirm_related_works",
+          "enter_reviewing",
+          "set_architecture_force_continue",
+          "retry_after_llm_failure",
+        }
         if action not in allowed:
             body = json.dumps({"ok": False, "message": f"不支持的动作: {action}"}, ensure_ascii=False).encode("utf-8")
             self.send_response(400)
@@ -1117,9 +1423,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if action == "enter_reviewing":
-            req_path = str(payload.get("requirements_path", "inputs/user_requirements.md")).strip()
-            manual_path = str(payload.get("manual_revision_path", "inputs/revision_requests.md")).strip()
-            if not _is_safe_rel_path(req_path) or not _is_safe_rel_path(manual_path):
+          req_path = str(payload.get("requirements_path", "inputs/write_requests.md")).strip()
+          manual_path = str(payload.get("manual_revision_path", "")).strip()
+          if not _is_safe_rel_path(req_path):
                 body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1127,6 +1433,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+          if manual_path and (not _is_safe_rel_path(manual_path)):
+            body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         _write_action(payload)
         body = json.dumps({"ok": True, "message": "动作已写入"}, ensure_ascii=False).encode("utf-8")

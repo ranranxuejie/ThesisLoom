@@ -3,19 +3,18 @@ import os, json
 import glob
 import re
 from datetime import datetime
+from core.project_paths import project_path, shared_input_path
 
 
 def resolve_inputs_path() -> str:
     candidate_paths = [
-        "inputs/inputs_safe.json",
-        "inputs_safe.json",
-        "inputs.json",
-        "inputs/inputs.json",
+        project_path("inputs", "inputs.json"),
+        project_path("inputs.json"),
     ]
     for path in candidate_paths:
         if os.path.exists(path):
             return path
-    return "inputs/inputs.json"
+    return project_path("inputs", "inputs.json")
 
 
 def read_text_if_exists(path: str) -> str:
@@ -29,8 +28,8 @@ def build_output_paths(model: str, topic: str, prompt_language: str) -> tuple[st
     safe_model = ''.join(ch for ch in str(model) if ch not in '\\/*?:"<>|').replace(" ", "_")
     base_topic = topic if str(topic).strip() else "auto_title_pending"
     safe_topic = ''.join(ch for ch in base_topic if ch not in '\\/*?:"<>|').replace(" ", "_")
-    output = f"completed_history/{safe_model}_{safe_topic}_{prompt_language}.md"
-    checkpoint = f"completed_history/{safe_model}_{safe_topic}_{prompt_language}_checkpoint.json"
+    output = project_path("completed_history", f"{safe_model}_{safe_topic}_{prompt_language}.md")
+    checkpoint = project_path("completed_history", f"{safe_model}_{safe_topic}_{prompt_language}_checkpoint.json")
     return output, checkpoint
 
 
@@ -49,7 +48,7 @@ def _safe_name(text: str) -> str:
 def find_latest_checkpoint_for_resume(model: str, prompt_language: str) -> str:
     safe_model = _safe_name(model)
     safe_lang = _safe_name(prompt_language)
-    pattern = f"completed_history/{safe_model}_*_{safe_lang}_checkpoint.json"
+    pattern = project_path("completed_history", f"{safe_model}_*_{safe_lang}_checkpoint.json")
     files = glob.glob(pattern)
     if not files:
         return ""
@@ -76,7 +75,7 @@ def migrate_paths_after_topic_update(
     if os.path.normpath(new_checkpoint_path) == os.path.normpath(checkpoint_path):
         return output_path, checkpoint_path
 
-    os.makedirs(os.path.dirname(new_checkpoint_path) or "completed_history", exist_ok=True)
+    os.makedirs(os.path.dirname(new_checkpoint_path) or project_path("completed_history"), exist_ok=True)
 
     if os.path.exists(checkpoint_path):
         os.replace(checkpoint_path, new_checkpoint_path)
@@ -168,7 +167,7 @@ def save_markdown_snapshot(state: "PaperWriterState", output_path: str) -> None:
 
 def save_versioned_snapshot(state: "PaperWriterState", output_path: str, tag: str) -> str:
     save_markdown_snapshot(state, output_path)
-    snapshots_dir = os.path.join("completed_history", "snapshots")
+    snapshots_dir = project_path("completed_history", "snapshots")
     os.makedirs(snapshots_dir, exist_ok=True)
 
     filename = os.path.basename(output_path)
@@ -184,19 +183,70 @@ def save_versioned_snapshot(state: "PaperWriterState", output_path: str, tag: st
     return snapshot_path
 
 
+def _checkpoint_history_path(checkpoint_path: str) -> str:
+    raw = str(checkpoint_path or "").strip()
+    if raw.endswith("_checkpoint.json"):
+        return raw[: -len("_checkpoint.json")] + "_checkpoint_history.json"
+    if raw.endswith(".json"):
+        return raw[:-5] + "_history.json"
+    return raw + "_history.json"
+
+
+def _append_history_json(file_path: str, entry: Dict[str, Any]) -> None:
+    items = []
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8-sig") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                items = loaded
+        except Exception:
+            items = []
+
+    items.append(entry)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+
 def save_state_checkpoint(state: "PaperWriterState", checkpoint_path: str) -> None:
     checkpoint_dir = os.path.dirname(checkpoint_path)
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
+    snapshot = state.export_checkpoint()
+    try:
+        snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
+    except Exception:
+        snapshot = dict(state.export_checkpoint())
+
     with open(checkpoint_path, "w", encoding="utf-8") as f:
-        json.dump(state.export_checkpoint(), f, ensure_ascii=False, indent=2)
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+
+    entry = {
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "checkpoint_path": str(checkpoint_path),
+        "phase": str(snapshot.get("workflow_phase", "")),
+        "node": str(snapshot.get("current_node", "")),
+        "reason": str(snapshot.get("last_checkpoint_reason", "")),
+        "state": snapshot,
+    }
+
+    # 追加到 topic 级历史与项目级历史，避免 checkpoint 仅保留最后一次状态。
+    topic_history_path = _checkpoint_history_path(checkpoint_path)
+    global_history_path = project_path("completed_history", "workflow_state_history.json")
+    try:
+        _append_history_json(topic_history_path, entry)
+        _append_history_json(global_history_path, entry)
+    except Exception as e:
+        print(f"| [WARN] 保存 checkpoint 历史失败: {e}")
 
 
 def load_state_checkpoint(checkpoint_path: str) -> Dict[str, Any]:
     return json.load(open(checkpoint_path, "r", encoding="utf-8-sig"))
 
 
-def cat_input_from_md(inputs: Dict[str, Any], folder_path: str = "inputs") -> Dict[str, Any]:
+def cat_input_from_md(inputs: Dict[str, Any], folder_path: str = "") -> Dict[str, Any]:
+    if not folder_path:
+        folder_path = project_path("inputs")
     for md_file in os.listdir(folder_path):
         if not md_file.endswith(".md"):
             continue
@@ -210,13 +260,15 @@ def cat_input_from_md(inputs: Dict[str, Any], folder_path: str = "inputs") -> Di
     return inputs
 
 
-def load_writing_guidance_library(folder_path: str = "inputs/guidance") -> Dict[str, str]:
+def load_writing_guidance_library(folder_path: str = "") -> Dict[str, str]:
     """
     从 guidance 目录加载模块写作指导文件。
     约定命名：*_guidance.md（例如 abstract_guidance.md, methods_guidance.md）。
     返回：{guidance_key: guidance_content}
     """
     guidance_map: Dict[str, str] = {}
+    if not folder_path:
+        folder_path = shared_input_path("guidance")
     if not os.path.isdir(folder_path):
         return guidance_map
 
@@ -232,13 +284,15 @@ def load_writing_guidance_library(folder_path: str = "inputs/guidance") -> Dict[
     return guidance_map
 
 
-def load_review_guidance_library(folder_path: str = "inputs/review") -> Dict[str, str]:
+def load_review_guidance_library(folder_path: str = "") -> Dict[str, str]:
     """
     从 review 目录加载模块化审稿规则文件。
     约定命名：*_review.md（例如 methods_review.md）。
     返回：{review_key: review_content}
     """
     review_map: Dict[str, str] = {}
+    if not folder_path:
+        folder_path = shared_input_path("review")
     if not os.path.isdir(folder_path):
         return review_map
 
@@ -302,9 +356,9 @@ class PaperWriterState:
         self.existing_material: str = inputs.get("existing_material", "无")
         self.research_gaps: str = inputs.get("research_gaps", "")
         self.language: str = inputs.get("language", "English")
-        self.user_requirements: str = inputs.get("user_requirements", "")
-        self.related_works_path: str = inputs.get("related_works_path", "inputs/related_works.md")
-        self.research_gap_output_path: str = inputs.get("research_gap_output_path", "outputs/research_gaps.md")
+        self.user_requirements: str = inputs.get("write_requests", inputs.get("user_requirements", ""))
+        self.related_works_path: str = inputs.get("related_works_path", project_path("inputs", "related_works.md"))
+        self.research_gap_output_path: str = inputs.get("research_gap_output_path", project_path("inputs", "research_gaps.md"))
         self.paper_search_limit: int = int(inputs.get("paper_search_limit", 20))
         self.openalex_api_key: str = str(inputs.get("openalex_api_key", "")).strip()
         self.ark_api_key: str = str(inputs.get("ark_api_key", "")).strip()
@@ -318,29 +372,34 @@ class PaperWriterState:
         self.wait_for_manual_related_works: bool = bool(inputs.get("wait_for_manual_related_works", False))
         self.related_works_summary: str = inputs.get("related_works_summary", "")
         self.search_queries = inputs.get("search_queries", [])
-        self.manual_revision_path: str = str(inputs.get("manual_revision_path", "inputs/revision_requests.md")).strip()
+        self.manual_revision_path: str = str(inputs.get("manual_revision_path", project_path("inputs", "revision_requests.md"))).strip()
         self.manual_revision_notes: str = inputs.get("manual_revision_notes", "")
         self.pending_action: str = str(inputs.get("pending_action", "")).strip()
         self.pending_action_message: str = str(inputs.get("pending_action_message", "")).strip()
+        raw_action_preferences = inputs.get("action_preferences", {})
+        self.action_preferences: Dict[str, Any] = dict(raw_action_preferences) if isinstance(raw_action_preferences, dict) else {}
+        raw_action_history = inputs.get("action_history", [])
+        self.action_history = [x for x in raw_action_history if isinstance(x, dict)] if isinstance(raw_action_history, list) else []
+        self.auto_apply_saved_actions: bool = bool(inputs.get("auto_apply_saved_actions", True))
         self.runtime_checkpoint_path: str = str(inputs.get("runtime_checkpoint_path", "")).strip()
         os.makedirs(os.path.dirname(self.research_gap_output_path), exist_ok=True)
         if "writing_guidance_library" in inputs:
             self.writing_guidance_library = inputs.get("writing_guidance_library", {})
         else:
-            guidance_dir = inputs.get("guidance_dir", "inputs/guidance")
+            guidance_dir = inputs.get("guidance_dir", shared_input_path("guidance"))
             self.writing_guidance_library = load_writing_guidance_library(guidance_dir)
 
         if "review_guidance_library" in inputs:
             self.review_guidance_library = inputs.get("review_guidance_library", {})
         else:
-            review_dir = inputs.get("review_dir", "inputs/review")
+            review_dir = inputs.get("review_dir", shared_input_path("review"))
             self.review_guidance_library = load_review_guidance_library(review_dir)
 
         # 必备文件校验：overall_guidance.md 与 overall_review.md
         if "overall_guidance" not in self.writing_guidance_library:
-            raise FileNotFoundError("Required guidance file missing: inputs/guidance/overall_guidance.md")
+            raise FileNotFoundError(f"Required guidance file missing: {shared_input_path('guidance', 'overall_guidance.md')}")
         if "overall_review" not in self.review_guidance_library:
-            raise FileNotFoundError("Required review file missing: inputs/review/overall_review.md")
+            raise FileNotFoundError(f"Required review file missing: {shared_input_path('review', 'overall_review.md')}")
 
         if not self.related_works_summary:
             self.related_works_summary = read_text_if_exists(self.related_works_path)
@@ -364,6 +423,15 @@ class PaperWriterState:
         self.major_review_plans = inputs.get("major_review_plans", [])
         self.review_round: int = int(inputs.get("review_round", 0))
         self.max_review_rounds: int = int(inputs.get("max_review_rounds", 3))
+        # 架构审查循环状态
+        self.architecture_review_enabled: bool = bool(inputs.get("architecture_review_enabled", True))
+        self.architecture_review_round: int = int(inputs.get("architecture_review_round", 0))
+        self.max_architecture_review_rounds: int = int(inputs.get("max_architecture_review_rounds", 3))
+        self.architecture_passed: bool = bool(inputs.get("architecture_passed", False))
+        self.architecture_summary: str = str(inputs.get("architecture_summary", ""))
+        self.architecture_issues = inputs.get("architecture_issues", [])
+        self.architecture_improvement_actions = inputs.get("architecture_improvement_actions", [])
+        self.architecture_force_continue: bool = bool(inputs.get("architecture_force_continue", False))
         # 工作流阶段控制：pre_research -> drafting -> review_pending -> reviewing -> done
         self.workflow_phase: str = inputs.get("workflow_phase", "pre_research")
         # 断点增强字段：用于更准确地恢复到具体执行位置
@@ -436,10 +504,10 @@ class PaperWriterState:
 
     def get_prompt_language(self) -> str:
         """
-        根据当前语言设置，返回提示词的语言版本
-        返回 'zh' 表示中文提示词，'en' 表示英文提示词
+        当前版本仅维护英文提示词模板，统一返回 en。
+        注意：self.language 仍用于约束论文输出语言，而非模板路由。
         """
-        return 'zh' if self.language.strip() == '中文' else 'en'
+        return "en"
 
     def get_overall_guidance(self) -> str:
         return self.writing_guidance_library.get("overall_guidance", "")

@@ -16,6 +16,7 @@ from core.state import (
 # 假设 call_doubao 函数放在 utils 或 llm 模块中
 from core.llm import call_llm
 from core.prompts import PROMPT_TEMPLATE
+from core.project_paths import project_path
 
 
 def _call_llm_safe(max_retries: int = 3, retry_delay_seconds: float = 2.0, **kwargs) -> Any:
@@ -313,8 +314,9 @@ def _build_search_queries_with_llm(state: PaperWriterState) -> list[str]:
     response = _call_llm_safe(system_input=prompt, thinking=False, model=state.model)
 
     try:
-        os.makedirs("completed_history", exist_ok=True)
-        with open("completed_history/query_builder_last_output.txt", "w", encoding="utf-8") as f:
+        out_path = project_path("completed_history", "query_builder_last_output.txt")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(str(response))
     except Exception:
         pass
@@ -519,7 +521,21 @@ def node_search_query_builder(state: PaperWriterState) -> PaperWriterState:
     return state
 
 
-def _ensure_chapter_header_in_first_subsection(content: str, major_id: str, header_title: str, lead: str) -> str:
+def _build_chapter_opening_markdown(major_id: str, header_title: str, lead: str) -> str:
+    title_line = f"## {str(major_id).strip()} {str(header_title).strip()}".strip()
+    parts = [title_line, ""]
+    if str(lead).strip():
+        parts.extend([str(lead).strip(), ""])
+    return "\n".join(parts).strip()
+
+
+def _ensure_chapter_header_in_first_subsection(
+    content: str,
+    major_id: str,
+    header_title: str,
+    lead: str,
+    opening_markdown: str = "",
+) -> str:
     text = str(content or "").strip()
     lines = text.splitlines()
 
@@ -530,9 +546,8 @@ def _ensure_chapter_header_in_first_subsection(content: str, major_id: str, head
             i += 1
         lines = lines[i:]
 
-    rebuilt = [f"## {major_id}.{header_title}", ""]
-    if str(lead).strip():
-        rebuilt.extend([str(lead).strip(), ""])
+    opening = str(opening_markdown or "").strip() or _build_chapter_opening_markdown(major_id, header_title, lead)
+    rebuilt = [opening, ""]
     rebuilt.extend(lines)
     return "\n".join(rebuilt).strip()
 
@@ -627,6 +642,54 @@ def node_chapter_header(state: PaperWriterState, current_major: Dict[str, Any]) 
     return state
 
 
+def node_chapter_opening(state: PaperWriterState, current_major: Dict[str, Any]) -> PaperWriterState:
+    """
+    Chapter Opening Node: 使用专用提示词生成章节开篇 markdown（仅二级标题+总起句）。
+    """
+    major_id = str(current_major.get("major_chapter_id", "")).strip()
+    if major_id == "0":
+        return state
+
+    header_title = str(current_major.get("chapter_header_title", current_major.get("major_title", ""))).strip()
+    header_lead = str(current_major.get("chapter_header_lead", "")).strip()
+    fallback_opening = _build_chapter_opening_markdown(major_id, header_title, header_lead)
+
+    prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["chapter_opening_writer"].safe_substitute(
+        topic=state.topic,
+        language=state.language,
+        user_requirements=getattr(state, "user_requirements", ""),
+        major_chapter_id=major_id,
+        major_title=current_major.get("major_title", ""),
+        chapter_header_title=header_title,
+        chapter_header_lead=header_lead,
+        major_purpose=current_major.get("major_purpose", ""),
+        sub_sections_info=json.dumps(current_major.get("sub_sections", []), ensure_ascii=False, indent=2),
+    )
+
+    response = _call_llm_safe(system_input=prompt, thinking=False, model=state.model)
+    _save_llm_call_checkpoint(state, "node_chapter_opening")
+    opening = "" if response is None else str(response).strip().removeprefix("```markdown").removeprefix("```").removesuffix("```").strip()
+
+    if opening:
+        kept_lines = []
+        for line in opening.splitlines():
+            if line.strip().startswith("### "):
+                break
+            kept_lines.append(line)
+        opening = "\n".join(kept_lines).strip()
+
+    if (not opening) or (not opening.splitlines()[0].strip().startswith("## ")):
+        opening = fallback_opening
+
+    if not str(header_lead).strip():
+        # 总起句为空时保持纯标题开篇，避免误注入无关正文。
+        opening = f"## {major_id} {header_title}".strip()
+
+    current_major["chapter_opening_markdown"] = opening
+    print(f"| [OK] [ChapterOpening] {major_id} 开篇块已生成")
+    return state
+
+
 def node_research_gaps(state: PaperWriterState) -> PaperWriterState:
     """
     Research Gaps Node: 基于主题、文献列表与补充文档生成研究空白与潜在贡献。
@@ -670,13 +733,22 @@ def node_architect(state: PaperWriterState) -> PaperWriterState:
     # 1. 组装 User Prompt
     # 使用 safe_substitute 安全注入 State 中的变量
     topic_for_architect = state.topic if state.topic.strip() else "（题目未提供：请先自动构建一个高质量论文标题）"
+    architecture_feedback = "None"
+    if getattr(state, "architecture_issues", []):
+        payload = {
+            "summary": getattr(state, "architecture_summary", ""),
+            "issues": getattr(state, "architecture_issues", []),
+            "improvement_actions": getattr(state, "architecture_improvement_actions", []),
+        }
+        architecture_feedback = json.dumps(payload, ensure_ascii=False, indent=2)
     system_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["architect"].safe_substitute(
         topic=topic_for_architect,
         existing_sections=state.existing_sections,
         existing_material=state.existing_material,
         research_gap_all=state.research_gaps,  # 注意映射到 state.research_gaps
         overall_guidance=state.get_overall_guidance(),
-        language=state.language
+        language=state.language,
+        architecture_review_feedback=architecture_feedback,
     )
 
     # 3. 调用大模型底层函数
@@ -700,12 +772,56 @@ def node_architect(state: PaperWriterState) -> PaperWriterState:
     return state
 
 
+def node_architecture_review(state: PaperWriterState) -> PaperWriterState:
+    """
+    Architecture Reviewer Node:
+    审查架构是否存在高优先级问题；若存在则返回可执行改进意见。
+    """
+    if not isinstance(getattr(state, "outline", None), list) or not state.outline:
+        raise RuntimeError("architecture review requires a non-empty outline")
+
+    state.architecture_review_round = int(getattr(state, "architecture_review_round", 0)) + 1
+    print(f"| [Node: ArchitectureReview] Round {state.architecture_review_round} ...")
+
+    prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["architecture_reviewer"].safe_substitute(
+        topic=state.topic,
+        language=state.language,
+        user_requirements=getattr(state, "user_requirements", ""),
+        outline=json.dumps(state.outline, ensure_ascii=False, indent=2),
+        research_gap_all=state.research_gaps,
+        overall_guidance=state.get_overall_guidance(),
+        architecture_review_round=state.architecture_review_round,
+        max_architecture_review_rounds=getattr(state, "max_architecture_review_rounds", 3),
+    )
+    response = _call_llm_safe(system_input=prompt, thinking=False, model=state.model)
+    _save_llm_call_checkpoint(state, "node_architecture_review")
+
+    review = _coerce_dict_or_none(response) or {}
+    issues = review.get("issues", []) if isinstance(review.get("issues", []), list) else []
+    actions = review.get("improvement_actions", []) if isinstance(review.get("improvement_actions", []), list) else []
+    summary = str(review.get("summary", "")).strip()
+
+    # 默认规则：无 high 问题即通过。
+    has_high = any(str(item.get("severity", "")).strip().lower() == "high" for item in issues if isinstance(item, dict))
+    model_passed = _coerce_bool(review.get("passed", not has_high), default=not has_high)
+    state.architecture_passed = bool(model_passed and (not has_high))
+    state.architecture_summary = summary
+    state.architecture_issues = issues
+    state.architecture_improvement_actions = actions
+
+    print(
+        f"| [ArchitectureReview] passed={state.architecture_passed}, "
+        f"issues={len(issues)}, high_blockers={1 if has_high else 0}"
+    )
+    return state
+
+
 def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterState:
     """
     Planner Node (Major Level): 接收整个大章节，一次性为下属【所有小节】生成段落蓝图与上下文路由。
     """
     major_title = current_major.get("major_title", "Unknown")
-    print(f"\n[Node: Planner] 正在为大章节 [{major_title}] 统筹制定下属所有小节的蓝图与路由...")
+    print(f"\n| [Node: Planner] 正在为大章节 [{major_title}] 统筹制定下属所有小节的蓝图与路由...")
     # 1. 提取所有小节的信息并转为易读的字符串，喂给大模型
     sub_sections_info = json.dumps(
         [{k: v for k, v in sub.items() if k != "draft_content"} for sub in current_major.get("sub_sections", [])],
@@ -760,7 +876,7 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
     """
     sub_id = current_sub.get('sub_chapter_id')
     sub_title = current_sub.get('sub_title')
-    print(f"\t\t[Node: Writer] 正在撰写正文: {sub_id} {sub_title} ...")
+    print(f"| | [Node: Writer] 正在撰写正文: {sub_id} {sub_title} ...")
 
     # 1. 提取动态路由开关
     routing = current_sub.get("context_routing", {})
@@ -807,7 +923,8 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
         selected_writing_guidance=selected_guidance,
         language=getattr(state, "language", "English"),
         user_requirements=getattr(state, "user_requirements", ""),
-        is_zero_chapter="true" if is_zero_chapter else "false"
+        is_zero_chapter="true" if is_zero_chapter else "false",
+        target_reminder=f"Only write subsection {sub_id} {sub_title}. Do not write any other subsection or previous chapter content.",
     )
 
     # 6. 调用大模型生成纯文本
@@ -826,6 +943,7 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
             major_id=major_id,
             header_title=header_title or str(current_major.get("major_title", "")).strip(),
             lead=header_lead,
+            opening_markdown=str(current_major.get("chapter_opening_markdown", "")).strip(),
         )
     # 7. 更新状态树中的草稿 (方便UI树状展示)
     current_sub["draft_content"] = cleaned_draft
@@ -961,7 +1079,7 @@ def node_major_review(state: PaperWriterState) -> PaperWriterState:
     """
     Major Reviewer Node: 按总审稿计划对每个大章节执行一次审稿，并产出待重写小节。
     """
-    print("\n[Node: MajorReview] 开始逐大章节审稿...")
+    print("\n| [Node: MajorReview] 开始逐大章节审稿...")
     review_library = getattr(state, "review_guidance_library", {})
     all_sections = state.completed_sections
     valid_ids = {sec.get("sub_chapter_id", "") for sec in all_sections}
@@ -1113,6 +1231,7 @@ def node_rewrite(state: PaperWriterState, review_item: Dict[str, Any]) -> PaperW
 
         major_outline["chapter_header_title"] = new_title
         major_outline["chapter_header_lead"] = new_lead
+        major_outline["chapter_opening_markdown"] = _build_chapter_opening_markdown(major_id, new_title, new_lead)
 
         # 同步更新该大章节首个小节正文中的章节标题与总起句。
         target = next((sec for sec in state.completed_sections if sec.get("sub_chapter_id") == f"{major_id}.1"), None)
@@ -1122,6 +1241,7 @@ def node_rewrite(state: PaperWriterState, review_item: Dict[str, Any]) -> PaperW
                 major_id=major_id,
                 header_title=new_title,
                 lead=new_lead,
+                opening_markdown=str(major_outline.get("chapter_opening_markdown", "")).strip(),
             )
         print(f"| [OK] [Rewrite] 大章节 {major_id} 标题/总起句重写完成")
         return state
@@ -1132,7 +1252,7 @@ def node_rewrite(state: PaperWriterState, review_item: Dict[str, Any]) -> PaperW
         print(f"[WARN] [Rewrite] 未找到目标小节: {sub_id}")
         return state
 
-    print(f"| [Node: Rewrite] 正在重写小节: {sub_id} {target.get('title', '')}")
+    print(f"| | [Node: Rewrite] 正在重写小节: {sub_id} {target.get('title', '')}")
 
     system_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["rewriter"].safe_substitute(
         topic=state.topic,
@@ -1151,6 +1271,18 @@ def node_rewrite(state: PaperWriterState, review_item: Dict[str, Any]) -> PaperW
     if not rewritten:
         print(f"[WARN] [Rewrite] 小节 {sub_id} 返回空结果，保留原稿。")
         return state
+
+    if (not str(sub_id).startswith("0.")) and str(sub_id).endswith(".1"):
+        major_id = str(sub_id).split(".")[0]
+        major_outline = next((m for m in state.outline if str(m.get("major_chapter_id", "")).strip() == major_id), None)
+        if major_outline:
+            rewritten = _ensure_chapter_header_in_first_subsection(
+                content=rewritten,
+                major_id=major_id,
+                header_title=str(major_outline.get("chapter_header_title", major_outline.get("major_title", ""))).strip(),
+                lead=str(major_outline.get("chapter_header_lead", "")).strip(),
+                opening_markdown=str(major_outline.get("chapter_opening_markdown", "")).strip(),
+            )
 
     target["content"] = rewritten
     print(f"\t[OK] [Rewrite] 小节 {sub_id} 重写完成，长度 {len(rewritten)} 字符。")

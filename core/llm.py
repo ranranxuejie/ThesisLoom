@@ -4,9 +4,12 @@ import time
 import threading
 import json
 import re
+import traceback
 import requests
 from typing import Any
 from volcenginesdkarkruntime import Ark
+from core.state import resolve_inputs_path
+from core.project_paths import project_path
 
 
 def _should_print_full_llm_output() -> bool:
@@ -15,18 +18,7 @@ def _should_print_full_llm_output() -> bool:
 
 
 def _load_llm_runtime_config_from_inputs() -> tuple[str, str, str]:
-    candidate_paths = [
-        "inputs/inputs_safe.json",
-        "inputs_safe.json",
-        "inputs.json",
-        "inputs/inputs.json",
-    ]
-    inputs_path = ""
-    for path in candidate_paths:
-        if os.path.exists(path):
-            inputs_path = path
-            break
-
+    inputs_path = resolve_inputs_path()
     if not os.path.exists(inputs_path):
         return "", "", ""
 
@@ -136,11 +128,53 @@ def _sanitize_sse_leakage_text(text: Any) -> str:
         cleaned.append(line)
     return "\n".join(cleaned).strip()
 
+
+def _dump_llm_debug(event: str, info: dict[str, Any]) -> None:
+    try:
+        debug_dir = project_path("completed_history", "llm_debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        millis = int((time.time() % 1) * 1000)
+        safe_event = re.sub(r"[^A-Za-z0-9_\-]", "_", str(event or "event"))
+        path = os.path.join(debug_dir, f"{ts}_{millis:03d}_{safe_event}.json")
+        payload = {
+            "event": str(event or ""),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "detail": info,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(debug_dir, "latest_debug_path.txt"), "w", encoding="utf-8") as f:
+            f.write(path)
+    except Exception:
+        pass
+
+
+def _build_chat_completions_url(base_url: str) -> str:
+    """Normalize OpenAI-compatible endpoint URLs.
+
+    Accepted inputs:
+    - http://localhost:8000
+    - http://localhost:8000/v1
+    - http://localhost:8000/v1/
+    - http://localhost:8000/v1/chat/completions
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+
+    lower = base.lower()
+    if lower.endswith("/chat/completions"):
+        return base
+    if lower.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
 def call_llm(system_input: str,
              user_input: str="",
              json_schema: dict=None,
             #  model: str = "doubao-seed-2-0-pro-260215",
-             model: str = "gemini-3-pro",
+             model: str = "gemini-3.1-pro",
              thinking: bool = True,
              max_completion_tokens: int = 2**15,
              request_timeout: tuple[float, float] = (20.0, 240.0)) -> Any:
@@ -171,7 +205,23 @@ def call_llm(system_input: str,
                 )
                 result_container['response'] = completion.choices[0].message.content
             except Exception as e:
-                result_container['error'] = e
+                result_container['error'] = str(e)
+                result_container['traceback'] = traceback.format_exc()
+                _dump_llm_debug(
+                    event="doubao_request_error",
+                    info={
+                        "model": model,
+                        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                        "messages": [
+                            {"role": "system", "content": system_input},
+                            {"role": "user", "content": user_input},
+                        ],
+                        "max_completion_tokens": max_completion_tokens,
+                        "thinking": "enabled" if thinking else "disabled",
+                        "exception": str(e),
+                        "traceback": result_container['traceback'],
+                    },
+                )
 
         print(f"| | |[RUN] 发起模型请求 (模型: {model}, 思考模式: {'开启' if thinking else '关闭'})")
 
@@ -179,15 +229,20 @@ def call_llm(system_input: str,
         api_thread = threading.Thread(target=_api_call)
 
     else:
-        base_url = os.getenv("LOCAL_API_URL") or cfg_base_url
-        token = os.getenv("LOCAL_API_TOKEN") or cfg_model_api_key
+        base_url = cfg_base_url or os.getenv("LOCAL_API_URL")
+        token = cfg_model_api_key or os.getenv("LOCAL_API_TOKEN")
         # --- 新增：调用你本地的 FastAPI 代理服务 ---
         if not base_url:
-            raise EnvironmentError("Please set LOCAL_API_URL LOCAL environment variables")
-        proxy_url = f"{base_url}/v1/chat/completions"
+            raise EnvironmentError("Please set LOCAL_API_URL or base_url in inputs config")
+
+        proxy_url = _build_chat_completions_url(base_url)
+        auth_header = "Bearer ANY_TOKEN"
+        if token:
+            auth_header = token if re.match(r"(?i)^\s*bearer\s+", token) else f"Bearer {token}"
+
         headers = {
             "Content-Type": "application/json",
-            "Authorization": token if token else "ANY_TOKEN"
+            "Authorization": auth_header,
         }
 
         # 组装消息列表：system/user 分角色传递，减少模型行为漂移。
@@ -213,6 +268,8 @@ def call_llm(system_input: str,
                 content_parts: list[str] = []
 
                 raw_payloads = []
+                stream_status_code = None
+                stream_response_headers = {}
                 with requests.post(
                     proxy_url,
                     headers=headers,
@@ -220,6 +277,8 @@ def call_llm(system_input: str,
                     stream=True,
                     timeout=request_timeout,
                 ) as resp:
+                    stream_status_code = resp.status_code
+                    stream_response_headers = dict(resp.headers)
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         if not line:
@@ -284,15 +343,43 @@ def call_llm(system_input: str,
                 if full_content:
                     result_container['response'] = full_content
                 else:
+                    _dump_llm_debug(
+                        event="proxy_empty_response",
+                        info={
+                            "model": model,
+                            "proxy_url": proxy_url,
+                            "headers": headers,
+                            "payload": payload,
+                            "request_timeout": request_timeout,
+                            "stream_status_code": stream_status_code,
+                            "stream_response_headers": stream_response_headers,
+                            "raw_payloads_tail": raw_payloads[-300:],
+                            "content_parts_count": len(content_parts),
+                        },
+                    )
                     # 保底：直接使用原始响应文本，避免非标准协议导致空返回。
                     try:
-                        os.makedirs("completed_history", exist_ok=True)
-                        with open("completed_history/llm_last_raw_response.txt", "w", encoding="utf-8") as dbg:
+                        raw_path = project_path("completed_history", "llm_last_raw_response.txt")
+                        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+                        with open(raw_path, "w", encoding="utf-8") as dbg:
                             dbg.write("\n".join(raw_payloads[-300:]))
                     except Exception:
                         pass
                     result_container['response'] = ""
             except Exception as e:
+                _dump_llm_debug(
+                    event="proxy_request_error",
+                    info={
+                        "model": model,
+                        "proxy_url": proxy_url,
+                        "headers": headers,
+                        "payload": payload,
+                        "request_timeout": request_timeout,
+                        "raw_payloads_tail": raw_payloads[-300:] if 'raw_payloads' in locals() else [],
+                        "exception": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
                 result_container['error'] = str(e)
 
         print(f"| | |[RUN] 发起BaseURL请求 (模型: {model})")
@@ -303,15 +390,25 @@ def call_llm(system_input: str,
 
     while api_thread.is_alive():
         elapsed_time = time.time() - start_time
-        sys.stdout.write(f"\r| | |[WAIT] 等待模型响应中... 已耗时: {elapsed_time:.1f} 秒")
+        sys.stdout.write(f"\r| | |[WAIT] 等待模型响应中... 已耗时: {elapsed_time:.2f} 秒")
         sys.stdout.flush()
         time.sleep(0.02)
     total_time = time.time() - start_time
-    sys.stdout.write(f"\r| | |[OK] 请求完成！总耗时: {total_time:.1f} 秒" + " " * 10 + "\n")
+    sys.stdout.write(f"\r| | |[OK] 请求完成！总耗时: {total_time:.2f} 秒" + " " * 10 + "\n")
     # sys.stdout.write(str(result_container))
     sys.stdout.flush()
 
     if 'error' in result_container:
+        _dump_llm_debug(
+            event="call_llm_raised_error",
+            info={
+                "model": model,
+                "system_input": system_input,
+                "user_input": user_input,
+                "error": result_container.get('error', ''),
+                "traceback": result_container.get('traceback', ''),
+            },
+        )
         raise RuntimeError(f"LLM request failed: {result_container['error']}")
 
     response = result_container.get('response', '')
@@ -321,6 +418,15 @@ def call_llm(system_input: str,
         response = re.sub(r"(?im)^\s*data:\s*\[done\]\s*$", "", response).strip()
 
     if not str(response).strip():
+        _dump_llm_debug(
+            event="call_llm_empty_response",
+            info={
+                "model": model,
+                "system_input": system_input,
+                "user_input": user_input,
+                "response_after_sanitize": str(response),
+            },
+        )
         raise RuntimeError("LLM request returned empty response")
 
     if _should_print_full_llm_output():
