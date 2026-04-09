@@ -8,6 +8,7 @@ import {
   fetchLogs,
   fetchState,
   openProject,
+  openProjectFolder,
   postAction,
   saveInputFile,
   saveInputs,
@@ -30,7 +31,6 @@ interface InputsFormState {
   ark_api_key: string;
   base_url: string;
   model_api_key: string;
-  auto_resume: boolean;
 }
 
 const DEFAULT_INPUTS_FORM: InputsFormState = {
@@ -43,7 +43,6 @@ const DEFAULT_INPUTS_FORM: InputsFormState = {
   ark_api_key: "",
   base_url: "",
   model_api_key: "",
-  auto_resume: false,
 };
 
 const FLOW_STEPS = [
@@ -273,7 +272,6 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
     ark_api_key: String(parsed.ark_api_key ?? DEFAULT_INPUTS_FORM.ark_api_key),
     base_url: String(parsed.base_url ?? DEFAULT_INPUTS_FORM.base_url),
     model_api_key: String(parsed.model_api_key ?? DEFAULT_INPUTS_FORM.model_api_key),
-    auto_resume: Boolean(parsed.auto_resume ?? DEFAULT_INPUTS_FORM.auto_resume),
   };
 
   return { form, extra };
@@ -291,7 +289,6 @@ function composeInputsPayload(form: InputsFormState, extra: Record<string, unkno
     ark_api_key: form.ark_api_key,
     base_url: form.base_url,
     model_api_key: form.model_api_key,
-    auto_resume: form.auto_resume,
   };
 }
 
@@ -604,6 +601,26 @@ function App() {
     }
   }, [baseUrl, loadEditableFiles, pushNotice, refreshInputs, refreshLogs, refreshProjects, refreshState, selectedProjectName]);
 
+  const openSelectedProjectFolder = useCallback(async () => {
+    const projectName = selectedProjectName.trim();
+    if (!projectName) {
+      pushNotice("warn", "请先选择要打开目录的项目");
+      return;
+    }
+
+    try {
+      const result = await openProjectFolder(baseUrl, projectName);
+      if (!result.ok) {
+        pushNotice("error", result.message || "打开项目文件夹失败");
+        return;
+      }
+
+      pushNotice("ok", result.message || `已打开项目文件夹: ${result.project_name || projectName}`);
+    } catch (err) {
+      pushNotice("error", `打开项目文件夹失败: ${String(err)}`);
+    }
+  }, [baseUrl, pushNotice, selectedProjectName]);
+
   const createAndOpenProject = useCallback(async () => {
     const projectName = newProjectName.trim();
     if (!projectName) {
@@ -816,7 +833,14 @@ function App() {
 
   const actionControl = (
     <div className="action-zone">
-      {!pendingAction && (
+      {!pendingAction && flowKey === "preparation" && (
+        <div className="action-block">
+          <p>当前处于准备阶段，可手动开始工作流。</p>
+          <button className="btn major" onClick={saveInputsAndStart}>开始工作流</button>
+        </div>
+      )}
+
+      {!pendingAction && flowKey !== "preparation" && (
         <div className="action-block">
           <p>当前无待处理动作。</p>
         </div>
@@ -959,9 +983,12 @@ function App() {
           </div>
 
           <section className="top-info-grid">
-            <div className="top-pill"><span>Topic</span>{topicLine}</div>
-            <div className="top-pill"><span>Phase (L1)</span>{phaseMajor}</div>
-            <div className="top-pill"><span>Phase (L2)</span>{phaseMinor}</div>
+            <div className="top-pill topic-pill"><span>Topic</span>{topicLine}</div>
+            <div className="top-pill phase-pill">
+              <span>Phase</span>
+              <strong>{phaseMajor}</strong>
+              <small>{phaseMinor}</small>
+            </div>
             <div className="top-pill"><span>Runtime</span>{runtimeStatus}</div>
           </section>
         </header>
@@ -984,6 +1011,7 @@ function App() {
                 </select>
               </label>
               <button className="btn" onClick={openExistingProject}>打开项目</button>
+              <button className="btn" onClick={openSelectedProjectFolder}>打开项目文件夹</button>
 
               <label className="field field-wide">
                 <span>新建项目名称</span>
@@ -1019,6 +1047,7 @@ function App() {
               <label className="field field-wide">
                 <span>topic *</span>
                 <textarea
+                  className="topic-textarea"
                   title="topic"
                   placeholder="请输入论文主题"
                   value={inputsForm.topic}
@@ -1110,16 +1139,6 @@ function App() {
                   value={inputsForm.model_api_key}
                   onChange={(e) => updateForm("model_api_key", e.target.value)}
                 />
-              </label>
-
-              <label className="field checkbox-field">
-                <input
-                  title="auto_resume"
-                  type="checkbox"
-                  checked={inputsForm.auto_resume}
-                  onChange={(e) => updateForm("auto_resume", e.target.checked)}
-                />
-                <span>auto_resume</span>
               </label>
             </div>
 

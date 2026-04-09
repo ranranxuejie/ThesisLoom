@@ -133,3 +133,10 @@ export interface ProjectTrashResult {
   active_project?: string;
   message?: string;
 }
+
+export interface ProjectFolderOpenResult {
+  ok: boolean;
+  project_name?: string;
+  project_root?: string;
+  message?: string;
+}

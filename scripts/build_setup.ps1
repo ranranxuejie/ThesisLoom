@@ -18,15 +18,18 @@ if (-not (Test-Path $bundleScript)) {
   throw "Bundle script not found: $bundleScript"
 }
 
-$args = @("-PythonExe", $PythonExe, "-BackendMode", $BackendMode)
+$bundleArgs = @{
+  PythonExe = $PythonExe
+  BackendMode = $BackendMode
+}
 if ($IncludeOptionalTlsBackends) {
-  $args += "-IncludeOptionalTlsBackends"
+  $bundleArgs.IncludeOptionalTlsBackends = $true
 }
 if ($SkipBackend) {
-  $args += "-SkipBackend"
+  $bundleArgs.SkipBackend = $true
 }
 
-& $bundleScript @args
+& $bundleScript @bundleArgs
 if ($LASTEXITCODE -ne 0) {
   throw "Desktop setup build failed with exit code $LASTEXITCODE"
 }

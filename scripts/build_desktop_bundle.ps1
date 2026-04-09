@@ -31,12 +31,14 @@ $pythonPath = Resolve-PathSafe $PythonExe
 
 if (-not $SkipBackend) {
   Write-Host "[bundle] step 1/3: build backend executable (mode=$BackendMode)"
-  $backendBuildArgs = @("-PythonExe", $pythonPath)
+  $backendBuildArgs = @{
+    PythonExe = $pythonPath
+  }
   if ($BackendMode -eq "onefile") {
-    $backendBuildArgs += "-OneFile"
+    $backendBuildArgs.OneFile = $true
   }
   if ($IncludeOptionalTlsBackends) {
-    $backendBuildArgs += "-IncludeOptionalTlsBackends"
+    $backendBuildArgs.IncludeOptionalTlsBackends = $true
   }
   & (Join-Path $repoRoot "scripts/build_backend_exe.ps1") @backendBuildArgs
   if ($LASTEXITCODE -ne 0) {

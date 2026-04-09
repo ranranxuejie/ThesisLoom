@@ -20,6 +20,14 @@ struct BackendState {
     last_workspace_root: Mutex<Option<String>>,
 }
 
+impl Drop for BackendState {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.child.lock() {
+            let _ = stop_child_process(&mut guard);
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct BackendStatus {
     running: bool,
@@ -51,7 +59,8 @@ fn detect_workspace_root(explicit_root: Option<String>) -> Result<PathBuf, Strin
     }
 
     for path in candidates {
-        if path.join("workflow.py").exists() && path.join("state_dashboard.py").exists() {
+        let has_backend_api = path.join("backend_api.py").exists() || path.join("state_dashboard.py").exists();
+        if path.join("workflow.py").exists() && has_backend_api {
             return Ok(path);
         }
     }
@@ -404,6 +413,18 @@ fn kill_process_tree(pid: u32) {
     }
 }
 
+fn stop_child_process(child_slot: &mut Option<Child>) -> Option<u32> {
+    if let Some(mut child) = child_slot.take() {
+        let pid = child.id();
+        kill_process_tree(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        Some(pid)
+    } else {
+        None
+    }
+}
+
 fn check_running(child: &mut Child) -> Result<bool, String> {
     match child.try_wait() {
         Ok(None) => Ok(true),
@@ -499,15 +520,7 @@ fn stop_backend(state: State<BackendState>, workspace_root: Option<String>) -> R
         .lock()
         .map_err(|_| "无法获取后端状态锁".to_string())?;
 
-    let stopped = if let Some(mut child) = guard.take() {
-        let pid = child.id();
-        kill_process_tree(pid);
-        let _ = child.kill();
-        let _ = child.wait();
-        Some(pid)
-    } else {
-        None
-    };
+    let stopped = stop_child_process(&mut guard);
 
     if let Ok(mut x) = state.last_error.lock() {
         *x = Some("后端已手动停止".to_string());

@@ -3,7 +3,7 @@
 ## 目标
 
 - 使用 Tauri + React 重构原有控制台 UI。
-- 复用现有 Python 工作流与状态接口（`state_dashboard.py`）。
+- 复用现有 Python 工作流与状态接口（`backend_api.py`）。
 - 通过 `desktop_backend.py` 启动 workflow + dashboard（默认 `127.0.0.1:8765`）。
 
 ## 开发启动

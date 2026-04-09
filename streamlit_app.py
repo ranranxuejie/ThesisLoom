@@ -1,22 +1,13 @@
 from __future__ import annotations
 
-import runpy
 import sys
-from pathlib import Path
 
 
-LEGACY_STREAMLIT_ENTRY = Path(__file__).resolve().parent / "history" / "legacy_frontend" / "streamlit_app_legacy.py"
-
-
-def main() -> None:
-    if not LEGACY_STREAMLIT_ENTRY.exists():
-        raise FileNotFoundError(f"Legacy streamlit app not found: {LEGACY_STREAMLIT_ENTRY}")
-
-    print("| [Legacy Frontend] streamlit_app has moved to history/legacy_frontend/streamlit_app_legacy.py")
-    print("| [Legacy Frontend] For desktop UI, use: npm --prefix desktop_ui run tauri -- dev")
-
-    # Keep backward compatibility for existing scripts that still run streamlit_app.py.
-    runpy.run_path(str(LEGACY_STREAMLIT_ENTRY), run_name="__main__")
+def main() -> int:
+    print("| Streamlit frontend has been removed from the active runtime.")
+    print("| Use desktop UI instead: npm --prefix desktop_ui run tauri -- dev")
+    print("| Legacy snapshot is kept at history/legacy_frontend/streamlit_app_legacy.py")
+    return 1
 
 
 if __name__ == "__main__":

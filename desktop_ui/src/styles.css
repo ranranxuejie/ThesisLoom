@@ -175,7 +175,7 @@ select {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 2.2fr 1.2fr 1.2fr 1.2fr;
+  grid-template-columns: 3.4fr 2.1fr 1.3fr;
   gap: 10px;
 }
 
@@ -195,6 +195,23 @@ select {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.topic-pill {
+  min-height: 76px;
+}
+
+.phase-pill {
+  align-content: start;
+}
+
+.phase-pill strong {
+  font-size: 14px;
+}
+
+.phase-pill small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .refresh-hint {
@@ -1002,6 +1019,10 @@ footer.notice.error {
   min-height: 130px;
 }
 
+.topic-textarea {
+  min-height: 190px;
+}
+
 .checkbox-field {
   align-items: center;
   grid-template-columns: 18px 1fr;
@@ -1040,5 +1061,33 @@ footer.notice.error {
 
   .project-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1161px) {
+  html,
+  body,
+  #root {
+    overflow-x: hidden;
+    overflow-y: hidden;
+  }
+
+  .app-shell {
+    height: calc(100vh - 34px);
+  }
+
+  .modern-shell {
+    min-height: 0;
+  }
+
+  .content-area {
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 2px;
+  }
+
+  .sidebar {
+    max-height: 100%;
   }
 }

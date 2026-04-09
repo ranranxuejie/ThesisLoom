@@ -5,6 +5,7 @@ import type {
   InputsPayload,
   LogsPayload,
   LogMode,
+  ProjectFolderOpenResult,
   ProjectOpenResult,
   ProjectTrashResult,
   ProjectsPayload,
@@ -83,6 +84,13 @@ export async function openProject(baseUrl: string, projectName: string): Promise
 
 export async function trashProject(baseUrl: string, projectName: string): Promise<ProjectTrashResult> {
   return requestJson<ProjectTrashResult>(`${baseUrl}/api/project/trash`, {
+    method: "POST",
+    body: JSON.stringify({ project_name: projectName }),
+  });
+}
+
+export async function openProjectFolder(baseUrl: string, projectName: string): Promise<ProjectFolderOpenResult> {
+  return requestJson<ProjectFolderOpenResult>(`${baseUrl}/api/project/open-folder`, {
     method: "POST",
     body: JSON.stringify({ project_name: projectName }),
   });

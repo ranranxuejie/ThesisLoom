@@ -660,23 +660,30 @@ def _infer_resume_phase(state: PaperWriterState) -> str:
     if current_phase == "done":
         return "done"
 
+    outline_sub_ids = _outline_sub_id_set(state)
+    completed_sub_ids = _completed_sub_id_set(state)
+    draft_is_complete = bool(completed_sub_ids) and (
+        (not outline_sub_ids) or outline_sub_ids.issubset(completed_sub_ids)
+    )
+
     review_round = int(getattr(state, "review_round", 0) or 0)
     reviewed_sections = getattr(state, "reviewed_sections", []) or []
     rewrite_done_sub_ids = getattr(state, "rewrite_done_sub_ids", []) or []
-    if current_phase == "reviewing" or review_round > 0 or bool(reviewed_sections) or bool(rewrite_done_sub_ids):
+    has_review_markers = current_phase == "reviewing" or review_round > 0 or bool(reviewed_sections) or bool(rewrite_done_sub_ids)
+    if has_review_markers and draft_is_complete:
         return "reviewing"
 
     if current_phase == "review_pending":
-        return "review_pending"
-
-    outline_sub_ids = _outline_sub_id_set(state)
-    completed_sub_ids = _completed_sub_id_set(state)
-    if completed_sub_ids:
-        if outline_sub_ids and outline_sub_ids.issubset(completed_sub_ids):
+        if draft_is_complete:
             return "review_pending"
         return "drafting"
 
-    if outline_sub_ids and outline_sub_ids.issubset(completed_sub_ids):
+    if completed_sub_ids:
+        if draft_is_complete:
+            return "review_pending"
+        return "drafting"
+
+    if draft_is_complete:
         return "review_pending"
 
     outline = _coerce_outline_list(getattr(state, "outline", []))
@@ -688,13 +695,17 @@ def _infer_resume_phase(state: PaperWriterState) -> str:
         return "drafting"
 
     pending_action = str(getattr(state, "pending_action", "") or "").strip()
+    if pending_action == "enter_reviewing":
+        if draft_is_complete:
+            return "review_pending"
+        return "drafting"
+
     pending_phase_map = {
         "confirm_inputs_ready": "pre_research",
         "set_enable_auto_title": "pre_research",
         "set_enable_search": "pre_research",
         "confirm_related_works": "pre_research",
         "set_architecture_force_continue": "drafting",
-        "enter_reviewing": "review_pending",
     }
     if pending_action in pending_phase_map:
         return pending_phase_map[pending_action]
@@ -940,7 +951,7 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
         temp_state.get_prompt_language(),
     )
 
-    auto_resume = bool(force_resume) or bool(initial_inputs.get("auto_resume", True))
+    auto_resume = True
     if auto_resume:
         if force_resume:
             selected_checkpoint = _latest_project_checkpoint_path() or checkpoint_path
@@ -1165,6 +1176,22 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
 
         state.workflow_phase = "drafting"
         _checkpoint(state, checkpoint_path, reason="node_research_gaps_done", node="node_research_gaps")
+
+    if state.workflow_phase in {"review_pending", "reviewing"}:
+        completed_sub_ids_for_review = _completed_sub_id_set(state)
+        outline_sub_ids_for_review = _outline_sub_id_set(state)
+        draft_complete_for_review = bool(completed_sub_ids_for_review) and (
+            (not outline_sub_ids_for_review) or outline_sub_ids_for_review.issubset(completed_sub_ids_for_review)
+        )
+        if not draft_complete_for_review:
+            state.workflow_phase = "drafting"
+            _checkpoint(state, checkpoint_path, reason="review_phase_guard_redirect_to_drafting", node="drafting")
+            _append_event(
+                "key",
+                "审稿前置校验未通过，已返回 drafting 继续完成正文",
+                node="drafting",
+                interaction_mode=interaction_mode,
+            )
 
     if state.workflow_phase == "drafting":
         _checkpoint(state, checkpoint_path, reason="enter_drafting_phase", node="drafting")

@@ -20,7 +20,63 @@ if (-not (Test-Path $pythonPath)) {
 
 $PythonExe = (Resolve-Path $pythonPath).Path
 
+function New-DemoPackageAssets {
+  param(
+    [string]$OutputRoot
+  )
+
+  if (Test-Path $OutputRoot) {
+    Remove-Item -Path $OutputRoot -Recurse -Force
+  }
+
+  $inputsDir = Join-Path $OutputRoot "inputs"
+  New-Item -ItemType Directory -Force -Path $inputsDir | Out-Null
+
+  $demoInputs = [ordered]@{
+    topic = "Demo topic: Human-in-the-Loop thesis writing workflow"
+    language = "English"
+    model = "gemini-3.1-pro"
+    max_review_rounds = 3
+    paper_search_limit = 30
+    openalex_api_key = ""
+    ark_api_key = ""
+    base_url = "http://localhost:8000/v1"
+    model_api_key = ""
+    auto_resume = $false
+  }
+  $demoInputsJson = ($demoInputs | ConvertTo-Json -Depth 8)
+  [System.IO.File]::WriteAllText(
+    (Join-Path $inputsDir "inputs.json"),
+    $demoInputsJson + [Environment]::NewLine,
+    [System.Text.Encoding]::UTF8
+  )
+
+  $demoMarkdownFiles = [ordered]@{
+    "existing_material.md" = "# Existing Materials`n`nPaste your existing manuscript materials or notes here.`n"
+    "existing_sections.md" = "# Existing Sections`n`nPaste any existing chapter content here.`n"
+    "related_works.md" = "# Related Works`n`nAdd your literature review summary here.`n"
+    "revision_requests.md" = "# Manual Revision Instructions`n`n### GLOBAL`n- Add your global revision requirements here.`n"
+    "write_requests.md" = "# Write Requests`n`nDescribe writing goals, style constraints, and output preferences.`n"
+    "research_gaps.md" = "# Research Gaps`n`n(Workflow will update this file.)`n"
+  }
+
+  foreach ($name in $demoMarkdownFiles.Keys) {
+    [System.IO.File]::WriteAllText(
+      (Join-Path $inputsDir $name),
+      [string]$demoMarkdownFiles[$name],
+      [System.Text.Encoding]::UTF8
+    )
+  }
+
+  return (Resolve-Path $inputsDir).Path
+}
+
 $buildMode = if ($OneFile) { "--onefile" } else { "--onedir" }
+
+$packageAssetsRoot = Join-Path $repoRoot "build/package_assets"
+$demoInputsDir = New-DemoPackageAssets -OutputRoot $packageAssetsRoot
+Write-Host "[build] demo-only package assets prepared: $demoInputsDir"
+Write-Host "[build] personal inputs/projects are excluded from installer payload"
 
 $baseExcludes = @(
   "streamlit",
@@ -90,16 +146,17 @@ $pyiArgs = @(
   "--optimize", "2",
   "--collect-submodules", "core",
   "--hidden-import", "workflow",
-  "--hidden-import", "state_dashboard",
+  "--hidden-import", "backend_api",
   "--hidden-import", "core.state",
   "--hidden-import", "core.nodes",
   "--hidden-import", "core.llm",
   "--hidden-import", "core.prompts",
   "--hidden-import", "core.project_paths",
   "--add-data", "workflow.py;.",
+  "--add-data", "backend_api.py;.",
   "--add-data", "state_dashboard.py;.",
   "--add-data", "core;core",
-  "--add-data", "inputs;inputs",
+  "--add-data", "$demoInputsDir;inputs",
   "--add-data", "README.md;."
 )
 

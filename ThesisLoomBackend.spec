@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = ['workflow', 'state_dashboard', 'core.state', 'core.nodes', 'core.llm', 'core.prompts', 'core.project_paths']
+hiddenimports = ['workflow', 'backend_api', 'core.state', 'core.nodes', 'core.llm', 'core.prompts', 'core.project_paths']
 hiddenimports += collect_submodules('core')
 
 
@@ -9,7 +9,7 @@ a = Analysis(
     ['desktop_backend.py'],
     pathex=[],
     binaries=[],
-    datas=[('workflow.py', '.'), ('state_dashboard.py', '.'), ('core', 'core'), ('inputs', 'inputs'), ('README.md', '.')],
+    datas=[('workflow.py', '.'), ('backend_api.py', '.'), ('state_dashboard.py', '.'), ('core', 'core'), ('D:\\PycharmProjects\\2026\\ThesisLoom\\build\\package_assets\\inputs', 'inputs'), ('README.md', '.')],
     hiddenimports=hiddenimports,
     hookspath=['scripts/pyinstaller_hooks'],
     hooksconfig={},

@@ -256,6 +256,25 @@ def relative_to_project(abs_path: str) -> str:
         return str(abs_path)
 
 
+def get_project_root_by_name(name: str) -> Optional[Path]:
+    safe_name = _safe_project_name(name)
+    if not safe_name:
+        return None
+
+    meta = _read_active_project_meta()
+    active_name = _safe_project_name(meta.get("name", DEFAULT_PROJECT_NAME))
+    if safe_name == active_name:
+        active_root = _resolve_project_root(active_name, meta.get("root_path", ""))
+        if active_root.exists() and active_root.is_dir():
+            return active_root
+        return None
+
+    root = (PROJECTS_DIR / safe_name).resolve()
+    if root.exists() and root.is_dir():
+        return root
+    return None
+
+
 def shared_input_path(*parts: str) -> str:
     if not parts:
         return str(SHARED_INPUTS_DIR.resolve())
