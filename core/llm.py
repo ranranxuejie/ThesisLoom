@@ -6,10 +6,78 @@ import json
 import re
 import traceback
 import requests
+from datetime import datetime
 from typing import Any
 from volcenginesdkarkruntime import Ark
 from core.state import resolve_inputs_path
 from core.project_paths import project_path
+def _estimate_tokens_locally(text: str) -> int:
+    if not text:
+        return 0
+    text = str(text)
+    # A simple but highly robust token estimation (CJK=1.5, ASCII=1.3 tokens)
+    cjk_chars = len(re.findall(r'[^\x00-\x7F]', text))
+    ascii_text = re.sub(r'[^\x00-\x7F]', ' ', text)
+    words = len(ascii_text.split())
+    return int(cjk_chars * 1.5 + words * 1.3) + 1
+
+def _estimate_messages_tokens(messages: list) -> int:
+    total = 0
+    for m in messages:
+        if isinstance(m, dict):
+            total += _estimate_tokens_locally(str(m.get("content", "")))
+            total += 4
+    return total + 2
+
+
+def _token_usage_file() -> str:
+    return project_path("completed_history", "token_usage.json")
+
+
+def _read_token_usage() -> dict:
+    path = _token_usage_file()
+    if not os.path.exists(path):
+        return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "history": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            data.setdefault("total_input_tokens", 0)
+            data.setdefault("total_output_tokens", 0)
+            data.setdefault("call_count", 0)
+            data.setdefault("history", [])
+            return data
+    except Exception:
+        pass
+    return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "history": []}
+
+
+def _record_token_usage(input_tokens: int, output_tokens: int, model: str = "", node: str = "") -> None:
+    if input_tokens <= 0 and output_tokens <= 0:
+        return
+    data = _read_token_usage()
+    data["total_input_tokens"] = int(data.get("total_input_tokens", 0)) + int(input_tokens)
+    data["total_output_tokens"] = int(data.get("total_output_tokens", 0)) + int(output_tokens)
+    data["call_count"] = int(data.get("call_count", 0)) + 1
+    data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    history = data.get("history", [])
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "model": str(model),
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+    })
+    # Keep last 500 entries
+    data["history"] = history[-500:]
+    path = _token_usage_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def _should_print_full_llm_output() -> bool:
@@ -204,6 +272,21 @@ def call_llm(system_input: str,
                     }
                 )
                 result_container['response'] = completion.choices[0].message.content
+                # Extract token usage from doubao SDK response
+                usage = getattr(completion, 'usage', None)
+                _in_toks = 0
+                _out_toks = 0
+                if usage is not None:
+                    _in_toks = int(getattr(usage, 'prompt_tokens', 0) or 0)
+                    _out_toks = int(getattr(usage, 'completion_tokens', 0) or 0)
+                
+                if _in_toks <= 0:
+                    _in_toks = _estimate_messages_tokens([{"role": "system", "content": system_input}, {"role": "user", "content": user_input}])
+                if _out_toks <= 0:
+                    _out_toks = _estimate_tokens_locally(result_container['response'])
+                    
+                result_container['_input_tokens'] = _in_toks
+                result_container['_output_tokens'] = _out_toks
             except Exception as e:
                 result_container['error'] = str(e)
                 result_container['traceback'] = traceback.format_exc()
@@ -261,11 +344,14 @@ def call_llm(system_input: str,
             "model": model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
         def _proxy_call():
             try:
                 content_parts: list[str] = []
+                usage_input_tokens = 0
+                usage_output_tokens = 0
 
                 raw_payloads = []
                 stream_status_code = None
@@ -308,6 +394,15 @@ def call_llm(system_input: str,
                                 content_parts.append(raw_data)
                             continue
                         content_parts.extend(_extract_content_parts_from_chunk_obj(data_obj))
+                        # Extract token usage from streaming chunks (usage is typically in the last chunk)
+                        chunk_usage = data_obj.get("usage")
+                        if isinstance(chunk_usage, dict):
+                            _pt = int(chunk_usage.get("prompt_tokens", 0) or 0)
+                            _ct = int(chunk_usage.get("completion_tokens", 0) or 0)
+                            if _pt > 0:
+                                usage_input_tokens = _pt
+                            if _ct > 0:
+                                usage_output_tokens = _ct
 
                 full_content = "".join(content_parts).strip()
                 if (not full_content) and raw_payloads:
@@ -317,12 +412,22 @@ def call_llm(system_input: str,
                             data_obj = json.loads(joined)
                             if isinstance(data_obj, dict):
                                 full_content = "".join(_extract_content_parts_from_chunk_obj(data_obj)).strip()
+                                # Extract usage from joined fallback
+                                _ju = data_obj.get("usage")
+                                if isinstance(_ju, dict):
+                                    _jpt = int(_ju.get("prompt_tokens", 0) or 0)
+                                    _jct = int(_ju.get("completion_tokens", 0) or 0)
+                                    if _jpt > 0:
+                                        usage_input_tokens = _jpt
+                                    if _jct > 0:
+                                        usage_output_tokens = _jct
                         except Exception:
                             pass
 
                 if (not full_content) and (not raw_payloads):
                     non_stream_payload = dict(payload)
                     non_stream_payload["stream"] = False
+                    non_stream_payload.pop("stream_options", None)
                     resp2 = requests.post(
                         proxy_url,
                         headers=headers,
@@ -334,6 +439,15 @@ def call_llm(system_input: str,
                         obj2 = resp2.json()
                         if isinstance(obj2, dict):
                             full_content = "".join(_extract_content_parts_from_chunk_obj(obj2)).strip()
+                            # Extract usage from non-stream fallback
+                            _nu = obj2.get("usage")
+                            if isinstance(_nu, dict):
+                                _npt = int(_nu.get("prompt_tokens", 0) or 0)
+                                _nct = int(_nu.get("completion_tokens", 0) or 0)
+                                if _npt > 0:
+                                    usage_input_tokens = _npt
+                                if _nct > 0:
+                                    usage_output_tokens = _nct
                     except Exception:
                         text2 = str(resp2.text or "").strip()
                         if text2:
@@ -341,7 +455,14 @@ def call_llm(system_input: str,
 
                 full_content = _sanitize_sse_leakage_text(full_content)
                 if full_content:
+                    if usage_input_tokens <= 0:
+                        usage_input_tokens = _estimate_messages_tokens(messages)
+                    if usage_output_tokens <= 0:
+                        usage_output_tokens = _estimate_tokens_locally(full_content)
+
                     result_container['response'] = full_content
+                    result_container['_input_tokens'] = usage_input_tokens
+                    result_container['_output_tokens'] = usage_output_tokens
                 else:
                     _dump_llm_debug(
                         event="proxy_empty_response",
@@ -428,6 +549,13 @@ def call_llm(system_input: str,
             },
         )
         raise RuntimeError("LLM request returned empty response")
+
+    # Record token usage
+    _input_tokens = int(result_container.get('_input_tokens', 0) or 0)
+    _output_tokens = int(result_container.get('_output_tokens', 0) or 0)
+    if _input_tokens > 0 or _output_tokens > 0:
+        _record_token_usage(_input_tokens, _output_tokens, model=model)
+        print(f"| | |[TOKENS] input: {_input_tokens}, output: {_output_tokens}")
 
     if _should_print_full_llm_output():
         print("\n[LLM OUTPUT BEGIN]")

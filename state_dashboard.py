@@ -18,6 +18,7 @@ from core.project_paths import (
   get_active_project_name,
   set_active_project,
   get_active_project_root,
+  move_project_to_recycle_bin,
 )
 
 try:
@@ -325,6 +326,13 @@ def open_or_create_project_by_folder(folder_path: str, project_name: str = "") -
     return {"ok": False, "message": str(e)}
 
 
+def move_project_to_trash(project_name: str) -> dict:
+  try:
+    return move_project_to_recycle_bin(project_name)
+  except Exception as e:
+    return {"ok": False, "message": str(e)}
+
+
 def _read_inputs_payload() -> dict:
     path = resolve_inputs_path()
     try:
@@ -415,24 +423,42 @@ def _read_metrics_snapshot() -> dict:
         return {"steps": {}, "totals": {"step_calls": 0, "total_step_seconds": 0.0}, "top_steps": []}
 
 
+def _read_token_usage_snapshot() -> dict:
+    try:
+        from core.llm import _read_token_usage
+        data = _read_token_usage()
+        return {
+            "total_input_tokens": int(data.get("total_input_tokens", 0)),
+            "total_output_tokens": int(data.get("total_output_tokens", 0)),
+            "call_count": int(data.get("call_count", 0)),
+            "updated_at": str(data.get("updated_at", "")),
+        }
+    except Exception:
+        return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "updated_at": ""}
+
+
 def _read_runtime_snapshot() -> dict:
     payload = {
         "runtime_status": "unknown",
         "runtime_message": "未检测到 workflow 运行态文件",
         "runtime_time": "-",
         "runtime_interaction_mode": "-",
+    "runtime_pending_action": "",
+    "runtime_pending_action_message": "",
     }
     runtime_file = _runtime_file()
     if not os.path.exists(runtime_file):
         return payload
     try:
-        with open(runtime_file, "r", encoding="utf-8") as f:
+        with open(runtime_file, "r", encoding="utf-8-sig") as f:
             raw = json.load(f)
         return {
             "runtime_status": str(raw.get("status", "unknown")),
             "runtime_message": str(raw.get("message", "")),
             "runtime_time": str(raw.get("time", "-")),
             "runtime_interaction_mode": str(raw.get("interaction_mode", "-")),
+          "runtime_pending_action": str(raw.get("pending_action", "")),
+          "runtime_pending_action_message": str(raw.get("pending_action_message", "")),
         }
     except Exception as e:
         payload["runtime_message"] = f"读取 runtime 失败: {e}"
@@ -456,14 +482,25 @@ def _read_fallback_inputs() -> tuple[str, str, str]:
 
 def _read_state_snapshot() -> dict:
     runtime = _read_runtime_snapshot()
+    runtime_status = str(runtime.get("runtime_status", "unknown")).strip().lower()
+    runtime_pending_action = str(runtime.get("runtime_pending_action", "")).strip()
+    runtime_pending_action_message = str(runtime.get("runtime_pending_action_message", "")).strip()
     metrics = _read_metrics_snapshot()
+    token_usage = _read_token_usage_snapshot()
     project_name = get_active_project_name()
     project_root = str(get_active_project_root())
     fallback_topic, fallback_model, fallback_language = _read_fallback_inputs()
     inputs_meta = _read_inputs_payload()
     inputs_path = str(inputs_meta.get("path", resolve_inputs_path()))
     inputs_data = inputs_meta.get("data", {}) if isinstance(inputs_meta.get("data", {}), dict) else {}
-    checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
+
+    if runtime_status in {"running", "waiting_action", "starting"}:
+        checkpoint = _latest_checkpoint_path()
+    else:
+        checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
+
+    if (not checkpoint) and runtime_status in {"running", "waiting_action", "starting"}:
+        checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
 
     if not checkpoint:
         return {
@@ -479,10 +516,13 @@ def _read_state_snapshot() -> dict:
             "inputs_model": str(inputs_data.get("model", fallback_model)),
             "inputs_language": str(inputs_data.get("language", fallback_language)),
             "workflow_phase": "idle",
-            "pending_action": "",
-            "pending_action_message": "",
+            "pending_action": runtime_pending_action,
+            "pending_action_message": runtime_pending_action_message,
+            "next_steps_plan": [],
+            "next_steps_updated_at": "",
             "paper_outputs": [],
             "workflow_metrics": metrics,
+            "token_usage": token_usage,
             "project_name": project_name,
             "project_root": project_root,
             **runtime,
@@ -561,6 +601,19 @@ def _read_state_snapshot() -> dict:
     action_preferences = raw_action_preferences if isinstance(raw_action_preferences, dict) else {}
     raw_action_history = data.get("action_history", [])
     action_history = [x for x in raw_action_history if isinstance(x, dict)] if isinstance(raw_action_history, list) else []
+    raw_next_steps = data.get("next_steps_plan", [])
+    next_steps_plan = [x for x in raw_next_steps if isinstance(x, dict)] if isinstance(raw_next_steps, list) else []
+    pending_action = str(data.get("pending_action", ""))
+    pending_action_message = str(data.get("pending_action_message", ""))
+    if runtime_status == "waiting_action":
+      if runtime_pending_action:
+        pending_action = runtime_pending_action
+        if runtime_pending_action_message:
+          pending_action_message = runtime_pending_action_message
+    elif runtime_status in {"running", "starting", "paused", "done", "stopped", "failed"}:
+      # Runtime is actively executing or already finished; stale checkpoint pending actions should be hidden.
+      pending_action = ""
+      pending_action_message = ""
 
     planner_outputs = []
     for major in outline:
@@ -621,8 +674,10 @@ def _read_state_snapshot() -> dict:
         "resume_count": _safe_int(data.get("resume_count", 0), 0),
         "user_requirements_size": len(str(data.get("user_requirements", ""))),
         "manual_revision_path": str(data.get("manual_revision_path", "inputs/revision_requests.md")),
-        "pending_action": str(data.get("pending_action", "")),
-        "pending_action_message": str(data.get("pending_action_message", "")),
+        "pending_action": pending_action,
+        "pending_action_message": pending_action_message,
+        "next_steps_plan": next_steps_plan,
+        "next_steps_updated_at": str(data.get("next_steps_updated_at", "")),
         "auto_apply_saved_actions": bool(data.get("auto_apply_saved_actions", True)),
         "action_preferences": action_preferences,
         "action_history": action_history[-40:],
@@ -638,6 +693,7 @@ def _read_state_snapshot() -> dict:
         "related_works_path": str(data.get("related_works_path", "inputs/related_works.md")),
         "research_gap_output_path": str(data.get("research_gap_output_path", "inputs/research_gaps.md")),
         "workflow_metrics": metrics,
+        "token_usage": token_usage,
         "project_name": project_name,
         "project_root": project_root,
         **runtime,
@@ -1195,7 +1251,18 @@ def _load_dashboard_html() -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
+  def end_headers(self):
+    self.send_header("Access-Control-Allow-Origin", "*")
+    self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    super().end_headers()
+
+  def do_OPTIONS(self):
+    self.send_response(204)
+    self.send_header("Content-Length", "0")
+    self.end_headers()
+
+  def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/state"):
             payload = _read_state_snapshot()
@@ -1297,6 +1364,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if parsed.path.startswith("/api/projects"):
+            try:
+                payload = {
+                    "ok": True,
+                    "items": list_available_projects(),
+                    "current": get_current_project_name(),
+                }
+            except Exception as e:
+                payload = {"ok": False, "items": [], "current": "", "message": str(e)}
+
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if parsed.path == "/" or parsed.path.startswith("/?"):
             body = _load_dashboard_html().encode("utf-8")
             self.send_response(200)
@@ -1309,148 +1395,232 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-    def do_POST(self):
-        parsed = urlparse(self.path)
+  def do_POST(self):
+      parsed = urlparse(self.path)
 
-        if parsed.path == "/api/inputs":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                payload = json.loads(raw.decode("utf-8"))
-                content = str(payload.get("content", ""))
-            except Exception as e:
-                body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-
-            result = _write_inputs_payload(content)
-            code = 200 if result.get("ok") else 400
-            body = json.dumps(result, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        if parsed.path == "/api/input-file":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                payload = json.loads(raw.decode("utf-8"))
-                path = str(payload.get("path", "")).strip()
-                content = str(payload.get("content", ""))
-            except Exception as e:
-                body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-
-            abs_path = absolute_path_in_project(path)
-            if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(abs_path)):
-                body = json.dumps({"ok": False, "message": "非法或不允许编辑的路径"}, ensure_ascii=False).encode("utf-8")
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-
-            try:
-                folder = os.path.dirname(abs_path)
-                if folder:
-                    os.makedirs(folder, exist_ok=True)
-                with open(abs_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                body = json.dumps({"ok": True, "path": path}, ensure_ascii=False).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            except Exception as e:
-                body = json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False).encode("utf-8")
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-
-        if parsed.path != "/api/action":
-            self.send_response(404)
-            self.end_headers()
-            return
-
+      if parsed.path == "/api/project/open":
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length) if length > 0 else b"{}"
-            payload = json.loads(raw.decode("utf-8"))
+          length = int(self.headers.get("Content-Length", "0"))
+          raw = self.rfile.read(length) if length > 0 else b"{}"
+          payload = json.loads(raw.decode("utf-8"))
+          project_name = str(payload.get("project_name", "")).strip()
         except Exception as e:
-            body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+          body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
 
-        action = str(payload.get("action", "")).strip()
-        allowed = {
-          "confirm_inputs_ready",
-          "set_enable_auto_title",
-          "set_enable_search",
-          "confirm_related_works",
-          "enter_reviewing",
-          "set_architecture_force_continue",
-          "retry_after_llm_failure",
-        }
-        if action not in allowed:
-            body = json.dumps({"ok": False, "message": f"不支持的动作: {action}"}, ensure_ascii=False).encode("utf-8")
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+        if not project_name:
+          body = json.dumps({"ok": False, "message": "project_name 不能为空"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
 
-        if action == "enter_reviewing":
-          req_path = str(payload.get("requirements_path", "inputs/write_requests.md")).strip()
-          manual_path = str(payload.get("manual_revision_path", "")).strip()
-          if not _is_safe_rel_path(req_path):
-                body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-          if manual_path and (not _is_safe_rel_path(manual_path)):
-            body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        _write_action(payload)
-        body = json.dumps({"ok": True, "message": "动作已写入"}, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        result = open_or_create_project(project_name)
+        code = 200 if result.get("ok") else 400
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        return
 
-    def log_message(self, fmt, *args):
+      if parsed.path == "/api/project/trash":
+        try:
+          length = int(self.headers.get("Content-Length", "0"))
+          raw = self.rfile.read(length) if length > 0 else b"{}"
+          payload = json.loads(raw.decode("utf-8"))
+          project_name = str(payload.get("project_name", "")).strip()
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        if not project_name:
+          body = json.dumps({"ok": False, "message": "project_name 不能为空"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        result = move_project_to_trash(project_name)
+        code = 200 if result.get("ok") else 400
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      if parsed.path == "/api/project/open-folder":
+        body = json.dumps(
+          {
+            "ok": False,
+            "message": "已禁用按文件夹切换项目。请使用 project_name 通过 /api/project/open 进行项目管理。",
+          },
+          ensure_ascii=False,
+        ).encode("utf-8")
+        self.send_response(410)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      if parsed.path == "/api/inputs":
+        try:
+          length = int(self.headers.get("Content-Length", "0"))
+          raw = self.rfile.read(length) if length > 0 else b"{}"
+          payload = json.loads(raw.decode("utf-8"))
+          content = str(payload.get("content", ""))
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        result = _write_inputs_payload(content)
+        code = 200 if result.get("ok") else 400
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      if parsed.path == "/api/input-file":
+        try:
+          length = int(self.headers.get("Content-Length", "0"))
+          raw = self.rfile.read(length) if length > 0 else b"{}"
+          payload = json.loads(raw.decode("utf-8"))
+          path = str(payload.get("path", "")).strip()
+          content = str(payload.get("content", ""))
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        abs_path = absolute_path_in_project(path)
+        if (not _is_safe_rel_path(path)) or (not _is_allowed_editable_input_file(abs_path)):
+          body = json.dumps({"ok": False, "message": "非法或不允许编辑的路径"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        try:
+          folder = os.path.dirname(abs_path)
+          if folder:
+            os.makedirs(folder, exist_ok=True)
+          with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+          body = json.dumps({"ok": True, "path": path}, ensure_ascii=False).encode("utf-8")
+          self.send_response(200)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False).encode("utf-8")
+          self.send_response(500)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+      if parsed.path != "/api/action":
+        self.send_response(404)
+        self.end_headers()
+        return
+
+      try:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        payload = json.loads(raw.decode("utf-8"))
+      except Exception as e:
+        body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      action = str(payload.get("action", "")).strip()
+      allowed = {
+        "confirm_inputs_ready",
+        "set_enable_auto_title",
+        "set_enable_search",
+        "confirm_related_works",
+        "enter_reviewing",
+        "set_architecture_force_continue",
+        "retry_after_llm_failure",
+        "confirm_next_review_round",
+      }
+      if action not in allowed:
+        body = json.dumps({"ok": False, "message": f"不支持的动作: {action}"}, ensure_ascii=False).encode("utf-8")
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      if action == "enter_reviewing":
+        req_path = str(payload.get("requirements_path", "inputs/write_requests.md")).strip()
+        manual_path = str(payload.get("manual_revision_path", "")).strip()
+        if not _is_safe_rel_path(req_path):
+          body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+        if manual_path and (not _is_safe_rel_path(manual_path)):
+          body = json.dumps({"ok": False, "message": "路径必须是相对路径且不能包含 .."}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+      _write_action(payload)
+      body = json.dumps({"ok": True, "message": "动作已写入"}, ensure_ascii=False).encode("utf-8")
+      self.send_response(200)
+      self.send_header("Content-Type", "application/json; charset=utf-8")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      self.wfile.write(body)
+
+  def log_message(self, fmt, *args):
         return
 
 

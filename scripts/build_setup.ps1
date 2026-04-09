@@ -1,6 +1,9 @@
 param(
-  [string]$InnoCompiler = "",
-  [string]$InstallerScript = "installer/ThesisLoom.iss"
+  [string]$PythonExe = ".venv/Scripts/python.exe",
+  [ValidateSet("onefile", "onedir")]
+  [string]$BackendMode = "onefile",
+  [switch]$IncludeOptionalTlsBackends,
+  [switch]$SkipBackend
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,46 +11,25 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
-if (-not (Test-Path $InstallerScript)) {
-  throw "Installer script not found: $InstallerScript"
+Write-Host "[setup] build full desktop package (frontend + backend sidecar)"
+
+$bundleScript = Join-Path $repoRoot "scripts/build_desktop_bundle.ps1"
+if (-not (Test-Path $bundleScript)) {
+  throw "Bundle script not found: $bundleScript"
 }
 
-if (-not (Test-Path "dist/ThesisLoom/ThesisLoom.exe")) {
-  throw "Missing EXE artifact: dist/ThesisLoom/ThesisLoom.exe. Run ./scripts/build_exe.ps1 first."
+$args = @("-PythonExe", $PythonExe, "-BackendMode", $BackendMode)
+if ($IncludeOptionalTlsBackends) {
+  $args += "-IncludeOptionalTlsBackends"
+}
+if ($SkipBackend) {
+  $args += "-SkipBackend"
 }
 
-if (-not (Test-Path "dist/ThesisLoom/_internal")) {
-  throw "Missing internal folder: dist/ThesisLoom/_internal. Run ./scripts/build_exe.ps1 first."
-}
-
-$candidates = @()
-if ($InnoCompiler) {
-  $candidates += $InnoCompiler
-}
-$candidates += @(
-  "C:/Program Files (x86)/Inno Setup 6/ISCC.exe",
-  "C:/Program Files/Inno Setup 6/ISCC.exe"
-)
-
-$compilerPath = $null
-foreach ($candidate in $candidates) {
-  if (Test-Path $candidate) {
-    $compilerPath = (Resolve-Path $candidate).Path
-    break
-  }
-}
-
-if (-not $compilerPath) {
-  throw "Inno Setup compiler not found. Install Inno Setup 6 or pass -InnoCompiler <path-to-ISCC.exe>."
-}
-
-Write-Host "[setup] using compiler: $compilerPath"
-Write-Host "[setup] building installer from: $InstallerScript"
-
-& $compilerPath $InstallerScript
+& $bundleScript @args
 if ($LASTEXITCODE -ne 0) {
-  throw "Installer build failed with exit code $LASTEXITCODE"
+  throw "Desktop setup build failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "[done] installer build complete"
-Write-Host "artifact: dist/installer/ThesisLoomSetup.exe"
+Write-Host "[done] desktop setup build complete"
+Write-Host "artifact: desktop_ui/src-tauri/target/release/bundle"

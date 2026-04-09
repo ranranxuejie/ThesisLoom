@@ -7,6 +7,11 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:
+    from send2trash import send2trash
+except Exception:
+    send2trash = None
+
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 ACTIVE_PROJECT_FILE = PROJECTS_DIR / ".active_project.json"
@@ -74,6 +79,38 @@ def list_projects() -> List[str]:
     if DEFAULT_PROJECT_NAME not in names:
         names.insert(0, DEFAULT_PROJECT_NAME)
     return names
+
+
+def move_project_to_recycle_bin(name: str) -> Dict[str, object]:
+    safe_name = _safe_project_name(name)
+    if safe_name == DEFAULT_PROJECT_NAME:
+        return {"ok": False, "message": "默认项目不可移至回收站"}
+
+    project_root = (PROJECTS_DIR / safe_name).resolve()
+    if (not project_root.exists()) or (not project_root.is_dir()):
+        return {"ok": False, "message": f"项目不存在: {safe_name}"}
+
+    if send2trash is None:
+        return {
+            "ok": False,
+            "message": "缺少依赖 send2trash，无法移至回收站。请先安装该依赖。",
+        }
+
+    try:
+        send2trash(str(project_root))
+    except Exception as e:
+        return {"ok": False, "message": f"移至回收站失败: {e}"}
+
+    current_active = get_active_project_name()
+    if current_active == safe_name:
+        set_active_project(DEFAULT_PROJECT_NAME)
+        current_active = get_active_project_name()
+
+    return {
+        "ok": True,
+        "project_name": safe_name,
+        "active_project": current_active,
+    }
 
 
 def _read_active_project_meta() -> Dict[str, str]:

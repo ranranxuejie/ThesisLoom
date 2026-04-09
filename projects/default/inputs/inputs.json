@@ -1,4 +1,5 @@
 {
+  "manual_revision_path": "inputs/revision_requests.md",
   "topic": "Graph Neural Network-Based Fault Detection for Distributed Industrial Internet of Things Production Systems",
   "language": "English",
   "model": "claude-sonnet-4-5-20250929",
@@ -8,6 +9,5 @@
   "ark_api_key": "741ebdb0-fb9e-432e-b1c4-bcb37d75ba86",
   "base_url": "https://acai-proxy-api.onrender.com/v1",
   "model_api_key": "sk-123",
-  "auto_resume": false,
-  "manual_revision_path": "inputs/revision_requests.md"
+  "auto_resume": false
 }

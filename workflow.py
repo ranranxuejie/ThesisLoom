@@ -239,10 +239,20 @@ def _consume_action(expected_action: str) -> Dict[str, Any] | None:
     return payload
 
 
+def _latest_project_checkpoint_path() -> str:
+    files = glob.glob(project_path("completed_history", "*_checkpoint.json"))
+    if not files:
+        return ""
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return files[0]
+
+
 _AUTO_APPLY_ACTIONS = {
     "confirm_inputs_ready",
     "set_enable_auto_title",
     "set_enable_search",
+    "confirm_related_works",
+    "enter_reviewing",
     "set_architecture_force_continue",
 }
 
@@ -255,7 +265,9 @@ def _normalize_action_payload(action_name: str, payload: Dict[str, Any]) -> Dict
     elif action_name == "enter_reviewing":
         normalized["load_requirements"] = bool(payload.get("load_requirements", True))
         req_path = str(payload.get("requirements_path", "inputs/write_requests.md") or "").strip() or "inputs/write_requests.md"
+        manual_path = str(payload.get("manual_revision_path", "inputs/revision_requests.md") or "").strip() or "inputs/revision_requests.md"
         normalized["requirements_path"] = req_path
+        normalized["manual_revision_path"] = manual_path
 
     return normalized
 
@@ -348,6 +360,9 @@ def _wait_for_action(
         elif action_name == "set_architecture_force_continue":
             raw = input("| 架构仅剩中低优问题，是否人工放行继续？[y/N]: ").strip().lower()
             action = {"action": action_name, "value": raw in {"y", "yes", "1", "true"}}
+        elif action_name == "confirm_next_review_round":
+            raw = input("| 是否进入下一轮审稿？[Y/n]: ").strip().lower()
+            action = {"action": action_name, "continue": raw not in {"n", "no", "0", "false"}}
         else:
             input("| 按回车继续...")
             action = {"action": action_name}
@@ -392,6 +407,117 @@ def _completed_sub_id_set(state: PaperWriterState) -> set[str]:
 def _rewrite_done_sub_id_set(state: PaperWriterState) -> set[str]:
     values = getattr(state, "rewrite_done_sub_ids", []) or []
     return {str(x).strip() for x in values if str(x).strip()}
+
+
+def _major_sub_sections(major: Dict[str, Any]) -> list[Dict[str, Any]]:
+    return [x for x in ((major or {}).get("sub_sections", []) or []) if isinstance(x, dict)]
+
+
+def _major_has_planner_cache(major: Dict[str, Any]) -> bool:
+    if bool((major or {}).get("planner_done", False)):
+        return True
+
+    planned_count = 0
+    for sub in _major_sub_sections(major):
+        routing = sub.get("context_routing", {})
+        blueprints = sub.get("paragraph_blueprints", [])
+        guidance_key = str(sub.get("selected_guidance_key", "")).strip()
+        guidance_reason = str(sub.get("guidance_reason", "")).strip()
+
+        has_plan = (
+            (isinstance(routing, dict) and bool(routing))
+            or (isinstance(blueprints, list) and bool(blueprints))
+            or bool(guidance_key)
+            or bool(guidance_reason)
+        )
+        if has_plan:
+            planned_count += 1
+
+    return planned_count > 0
+
+
+def _major_has_header_cache(major: Dict[str, Any]) -> bool:
+    major_id = str((major or {}).get("major_chapter_id", "")).strip()
+    if major_id == "0":
+        return True
+    if bool((major or {}).get("chapter_header_ready", False)):
+        return True
+    title = str((major or {}).get("chapter_header_title", "")).strip()
+    lead = str((major or {}).get("chapter_header_lead", "")).strip()
+    return bool(title or lead)
+
+
+def _major_has_opening_cache(major: Dict[str, Any]) -> bool:
+    major_id = str((major or {}).get("major_chapter_id", "")).strip()
+    if major_id == "0":
+        return True
+    if bool((major or {}).get("chapter_opening_ready", False)):
+        return True
+    opening = str((major or {}).get("chapter_opening_markdown", "")).strip()
+    return bool(opening)
+
+
+def _build_drafting_next_steps(outline: list[dict], done_sub_ids: set[str]) -> list[dict]:
+    rows: list[dict] = []
+    order_index = 0
+    writing_queue = sorted(outline or [], key=lambda x: int((x or {}).get("writing_order", 999) or 999))
+
+    for major in writing_queue:
+        if not isinstance(major, dict):
+            continue
+        major_id = str(major.get("major_chapter_id", "")).strip()
+        major_title = str(major.get("major_title", "")).strip()
+        sub_sections = [x for x in (major.get("sub_sections", []) or []) if isinstance(x, dict)]
+
+        for sub in sub_sections:
+            sub_id = str(sub.get("sub_chapter_id", "")).strip()
+            if not sub_id:
+                continue
+            order_index += 1
+            rows.append(
+                {
+                    "phase": "drafting",
+                    "order": order_index,
+                    "major_chapter_id": major_id,
+                    "major_title": major_title,
+                    "sub_chapter_id": sub_id,
+                    "sub_title": str(sub.get("sub_title", "")).strip(),
+                    "status": "done" if sub_id in done_sub_ids else "todo",
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+    return rows
+
+
+def _refresh_drafting_next_steps(state: PaperWriterState, done_sub_ids: set[str]) -> None:
+    outline = _coerce_outline_list(getattr(state, "outline", []))
+    state.next_steps_plan = _build_drafting_next_steps(outline, done_sub_ids)
+    state.next_steps_updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _mark_drafting_step_done(state: PaperWriterState, sub_id: str) -> None:
+    target = str(sub_id or "").strip()
+    if not target:
+        return
+
+    changed = False
+    rows = getattr(state, "next_steps_plan", [])
+    if not isinstance(rows, list):
+        rows = []
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("sub_chapter_id", "")).strip() != target:
+            continue
+        if str(row.get("status", "")).strip() != "done":
+            row["status"] = "done"
+            changed = True
+        row["updated_at"] = now_text
+
+    if changed:
+        state.next_steps_updated_at = now_text
 
 
 def _ensure_manual_revision_template(path: str) -> None:
@@ -598,10 +724,23 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
             state.pre_done_title = True
         notes.append("auto_title_state_repaired")
 
+    remembered_auto_title = _recall_action_choice(state, "set_enable_auto_title")
+    if state.enable_auto_title is None and isinstance(remembered_auto_title, dict) and ("value" in remembered_auto_title):
+        state.enable_auto_title = bool(remembered_auto_title.get("value", False))
+        notes.append("enable_auto_title_restored_from_memory")
+    if (state.enable_auto_title is False) and (not bool(getattr(state, "pre_done_title", False))):
+        state.pre_done_title = True
+        notes.append("auto_title_marked_done_by_choice")
+
     queries = getattr(state, "search_queries", []) or []
     if isinstance(queries, list) and queries and (not bool(getattr(state, "pre_done_query_builder", False))):
         state.pre_done_query_builder = True
         notes.append("query_builder_marked_done")
+
+    remembered_search = _recall_action_choice(state, "set_enable_search")
+    if state.enable_paper_search is None and isinstance(remembered_search, dict) and ("value" in remembered_search):
+        state.enable_paper_search = bool(remembered_search.get("value", False))
+        notes.append("enable_search_restored_from_memory")
 
     if state.enable_paper_search is None and bool(getattr(state, "pre_done_query_builder", False)):
         state.enable_paper_search = True
@@ -620,6 +759,16 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
         state.pre_done_paper_search = True
         notes.append("paper_search_marked_done")
 
+    remembered_related_confirm = _recall_action_choice(state, "confirm_related_works")
+    if (
+        (not bool(getattr(state, "pre_done_related_confirm", False)))
+        and (remembered_related_confirm is not None)
+        and (bool(getattr(state, "pre_done_paper_search", False)) or bool(related_works_text))
+    ):
+        state.pre_done_related_confirm = True
+        state.wait_for_manual_related_works = False
+        notes.append("related_works_confirm_restored_from_memory")
+
     research_gaps_text = str(getattr(state, "research_gaps", "") or "").strip()
     if not research_gaps_text:
         rg_file = str(getattr(state, "research_gap_output_path", "") or "").strip()
@@ -636,10 +785,9 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
     completed_sub_ids = _completed_sub_id_set(state)
     has_drafting_progress = bool(completed_sub_ids)
     if has_drafting_progress and state.enable_paper_search is None:
-        remembered_search = _recall_action_choice(state, "set_enable_search")
         if isinstance(remembered_search, dict) and ("value" in remembered_search):
             state.enable_paper_search = bool(remembered_search.get("value", False))
-            notes.append("enable_search_restored_from_memory")
+            notes.append("enable_search_restored_from_memory_drafting")
         else:
             state.enable_paper_search = bool(
                 bool(getattr(state, "pre_done_query_builder", False))
@@ -659,6 +807,17 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
             state.pending_action_message = ""
             notes.append("stale_pending_action_cleared")
             pending_action = ""
+
+    remembered_arch_force_continue = _recall_action_choice(state, "set_architecture_force_continue")
+    if (
+        normalized_outline
+        and (not bool(getattr(state, "architecture_force_continue", False)))
+        and isinstance(remembered_arch_force_continue, dict)
+        and bool(remembered_arch_force_continue.get("value", False))
+    ):
+        state.architecture_force_continue = True
+        state.architecture_passed = True
+        notes.append("architecture_force_continue_restored_from_memory")
 
     if normalized_outline and (not bool(getattr(state, "architecture_passed", False))) and pending_action != "set_architecture_force_continue":
         state.architecture_passed = True
@@ -783,12 +942,15 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
 
     auto_resume = bool(force_resume) or bool(initial_inputs.get("auto_resume", True))
     if auto_resume:
-        selected_checkpoint = _select_best_resume_checkpoint(
-            default_checkpoint=checkpoint_path,
-            model=temp_state.model,
-            topic=temp_state.topic,
-            prompt_language=temp_state.get_prompt_language(),
-        )
+        if force_resume:
+            selected_checkpoint = _latest_project_checkpoint_path() or checkpoint_path
+        else:
+            selected_checkpoint = _select_best_resume_checkpoint(
+                default_checkpoint=checkpoint_path,
+                model=temp_state.model,
+                topic=temp_state.topic,
+                prompt_language=temp_state.get_prompt_language(),
+            )
         if selected_checkpoint and os.path.exists(selected_checkpoint):
             checkpoint_path = selected_checkpoint
             fallback_output = output_path_from_checkpoint(selected_checkpoint)
@@ -1007,8 +1169,24 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
     if state.workflow_phase == "drafting":
         _checkpoint(state, checkpoint_path, reason="enter_drafting_phase", node="drafting")
         state.architecture_force_continue = bool(getattr(state, "architecture_force_continue", False))
-        if not bool(getattr(state, "architecture_passed", False)):
-            for _ in range(int(getattr(state, "max_architecture_review_rounds", 3))):
+
+        # Determine if architect needs to run:
+        # If outline already exists, treat architecture as completed and continue downstream.
+        existing_outline = _coerce_outline_list(getattr(state, "outline", []))
+        has_existing_outline = bool(existing_outline)
+        existing_sections_count = len(_completed_sub_id_set(state))
+
+        if has_existing_outline:
+            if not bool(getattr(state, "architecture_passed", False)):
+                state.architecture_passed = True
+                _checkpoint(state, checkpoint_path, reason="architecture_passed_via_existing_outline", node="drafting")
+            print(
+                f"| [Resume] 检测到已有 architect 结果({len(existing_outline)} 章节)，"
+                f"已完成小节 {existing_sections_count} 个，跳过架构师阶段"
+            )
+        elif not bool(getattr(state, "architecture_passed", False)):
+            max_rounds = int(getattr(state, "max_architecture_review_rounds", 3))
+            for i in range(max_rounds):
                 _check_stop(stop_event)
                 state = _timed_call(
                     "node_architect",
@@ -1023,6 +1201,14 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
 
                 if not bool(getattr(state, "architecture_review_enabled", True)):
                     state.architecture_passed = True
+                    break
+
+                # 如果是最后一次生成架构，则自动跳过审稿并放行
+                if i == max_rounds - 1:
+                    state.architecture_passed = True
+                    print(f"| [架构通过] 达到最大重写轮次({max_rounds})，最后一次生成的架构无需再审核，自动跳过审核环节并采纳。")
+                    _write_runtime_status("running", "生成最后一次架构，跳过审核自动采纳", interaction_mode=interaction_mode)
+                    _checkpoint(state, checkpoint_path, reason="architecture_auto_passed_final_round", node="drafting")
                     break
 
                 state = _timed_call(
@@ -1077,6 +1263,13 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
 
         writing_queue = sorted(state.outline, key=lambda x: int((x or {}).get("writing_order", 999) or 999))
         done_sub_ids = _completed_sub_id_set(state)
+        _refresh_drafting_next_steps(state, done_sub_ids)
+        _checkpoint(state, checkpoint_path, reason="drafting_next_steps_planned", node="drafting")
+
+        # Determine the checkpoint resume position for granular resume within drafting
+        resume_node = str(getattr(state, "current_node", "")).strip()
+        resume_major_id = str(getattr(state, "current_major_chapter_id", "")).strip()
+        resume_sub_id = str(getattr(state, "current_sub_chapter_id", "")).strip()
 
         for major_chapter in writing_queue:
             major_id = str(major_chapter.get("major_chapter_id", "")).strip()
@@ -1095,33 +1288,98 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
                 f"(优先级: {major_chapter.get('writing_order', 999)})"
             )
 
-            state = _timed_call(
-                "node_planner",
-                "node_planner",
-                str(getattr(state, "workflow_phase", "")),
-                node_planner,
-                state,
-                major_chapter,
-            )
-            _checkpoint(state, checkpoint_path, reason="node_planner_done", node="node_planner", major_id=major_id, sub_id="")
-            state = _timed_call(
-                "node_chapter_header",
-                "node_chapter_header",
-                str(getattr(state, "workflow_phase", "")),
-                node_chapter_header,
-                state,
-                major_chapter,
-            )
-            _checkpoint(state, checkpoint_path, reason="node_chapter_header_done", node="node_chapter_header", major_id=major_id, sub_id="")
-            state = _timed_call(
-                "node_chapter_opening",
-                "node_chapter_opening",
-                str(getattr(state, "workflow_phase", "")),
-                node_chapter_opening,
-                state,
-                major_chapter,
-            )
-            _checkpoint(state, checkpoint_path, reason="node_chapter_opening_done", node="node_chapter_opening", major_id=major_id, sub_id="")
+            # Granular skip and resume:
+            # - If this chapter already has completed sub-sections, setup nodes were done before.
+            # - If checkpoint shows we were already inside planner/header/opening/writer for this chapter,
+            #   skip already-finished setup nodes and continue from the precise stuck step.
+            chapter_done_subs = {
+                str(x.get("sub_chapter_id", "")).strip()
+                for x in sub_sections
+                if str(x.get("sub_chapter_id", "")).strip() in done_sub_ids
+            }
+            planner_cached = _major_has_planner_cache(major_chapter)
+            header_cached = _major_has_header_cache(major_chapter)
+            opening_cached = _major_has_opening_cache(major_chapter)
+
+            if planner_cached and (not bool(major_chapter.get("planner_done", False))):
+                major_chapter["planner_done"] = True
+            if header_cached and (not bool(major_chapter.get("chapter_header_ready", False))):
+                major_chapter["chapter_header_ready"] = True
+            if opening_cached and (not bool(major_chapter.get("chapter_opening_ready", False))):
+                major_chapter["chapter_opening_ready"] = True
+
+            is_resume_major = bool(resume_major_id) and (resume_major_id == major_id)
+            resume_node_for_major = resume_node if is_resume_major else ""
+
+            planner_done = bool(chapter_done_subs) or planner_cached
+            header_done = bool(chapter_done_subs) or header_cached
+            opening_done = bool(chapter_done_subs) or opening_cached
+
+            if resume_node_for_major == "node_planner":
+                planner_done = True
+            elif resume_node_for_major == "node_chapter_header":
+                planner_done = True
+                header_done = True
+            elif resume_node_for_major in {"node_chapter_opening", "node_writer"}:
+                planner_done = True
+                header_done = True
+                opening_done = True
+
+            if planner_done and header_done and opening_done:
+                if chapter_done_subs:
+                    print(f"| [Resume] 大章节 {major_id} 已有 {len(chapter_done_subs)} 个已完成小节，跳过 planner/header/opening")
+                elif resume_node_for_major:
+                    print(f"| [Resume] 大章节 {major_id} 从断点节点 {resume_node_for_major} 继续，跳过已完成 setup 节点")
+                else:
+                    print(f"| [Resume] 大章节 {major_id} 检测到已有 planner/header/opening 缓存，直接进入写作子节")
+
+            if not planner_done:
+                state = _timed_call(
+                    "node_planner",
+                    "node_planner",
+                    str(getattr(state, "workflow_phase", "")),
+                    node_planner,
+                    state,
+                    major_chapter,
+                )
+                major_chapter["planner_done"] = True
+                _checkpoint(state, checkpoint_path, reason="node_planner_done", node="node_planner", major_id=major_id, sub_id="")
+
+            if not header_done:
+                state = _timed_call(
+                    "node_chapter_header",
+                    "node_chapter_header",
+                    str(getattr(state, "workflow_phase", "")),
+                    node_chapter_header,
+                    state,
+                    major_chapter,
+                )
+                major_chapter["chapter_header_ready"] = True
+                _checkpoint(state, checkpoint_path, reason="node_chapter_header_done", node="node_chapter_header", major_id=major_id, sub_id="")
+
+            if not opening_done:
+                state = _timed_call(
+                    "node_chapter_opening",
+                    "node_chapter_opening",
+                    str(getattr(state, "workflow_phase", "")),
+                    node_chapter_opening,
+                    state,
+                    major_chapter,
+                )
+                major_chapter["chapter_opening_ready"] = True
+                _checkpoint(state, checkpoint_path, reason="node_chapter_opening_done", node="node_chapter_opening", major_id=major_id, sub_id="")
+
+            if is_resume_major and resume_sub_id:
+                resume_anchor_idx = -1
+                for idx_resume, sec in enumerate(pending_sub_sections):
+                    if str(sec.get("sub_chapter_id", "")).strip() == resume_sub_id:
+                        resume_anchor_idx = idx_resume
+                        break
+                if resume_anchor_idx > 0:
+                    skipped = pending_sub_sections[:resume_anchor_idx]
+                    pending_sub_sections = pending_sub_sections[resume_anchor_idx:]
+                    print(f"| [Resume] 大章节 {major_id} 按断点子节 {resume_sub_id} 继续，跳过 {len(skipped)} 个已在断点前的小节")
+
             for sub_section in pending_sub_sections:
                 sub_id = str(sub_section.get("sub_chapter_id", "")).strip()
                 if sub_id in done_sub_ids:
@@ -1138,9 +1396,18 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
                     sub_section,
                 )
                 save_markdown_snapshot(state, output_path)
+                done_sub_ids.add(sub_id)
+                _mark_drafting_step_done(state, sub_id)
                 _checkpoint(state, checkpoint_path, reason="node_writer_done", node="node_writer", major_id=major_id, sub_id=sub_id)
                 _append_event("key", f"写作完成: {sub_id}", node="node_writer")
-                done_sub_ids.add(sub_id)
+
+        # Safety guard: only move to review_pending if at least one section was written
+        if not _completed_sub_id_set(state):
+            print("| [ERROR] drafting 阶段未生成任何正文小节，无法进入审稿。请检查大纲和写作流程。")
+            _write_runtime_status("error", "drafting 阶段未生成任何正文，无法进入审稿", interaction_mode=interaction_mode)
+            _append_event("key", "drafting 阶段未生成正文", interaction_mode=interaction_mode)
+            _checkpoint(state, checkpoint_path, reason="drafting_no_content_error", node="drafting")
+            raise RuntimeError("DRAFTING_NO_CONTENT: 正文写稿阶段未生成任何内容，无法进入审稿。")
 
         state.workflow_phase = "review_pending"
         state.current_major_chapter_id = ""
@@ -1258,6 +1525,30 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
             _checkpoint(state, checkpoint_path, reason="rewrite_round_snapshot_saved", node="reviewing")
             print(f"| 改稿快照已保存: {round_snapshot}")
             print("| 所有章节重写完成")
+
+            # Manual confirmation: wait for user to decide whether to continue to next round
+            action = _timed_call(
+                "wait_confirm_next_review_round",
+                "reviewing",
+                str(getattr(state, "workflow_phase", "")),
+                _wait_for_action,
+                state,
+                checkpoint_path,
+                action_name="confirm_next_review_round",
+                prompt=f"第 {state.review_round} 轮审稿/重写已完成。请确认是否进入下一轮审稿，或停止并保留当前结果。",
+                node="reviewing",
+                interaction_mode=interaction_mode,
+                stop_event=stop_event,
+            )
+
+            should_continue = bool(action.get("continue", True))
+            if not should_continue:
+                print(f"| 用户选择停止审稿，保留第 {state.review_round} 轮结果")
+                _write_runtime_status("done", f"用户停止审稿，保留第 {state.review_round} 轮结果", interaction_mode=interaction_mode)
+                _append_event("key", f"用户停止审稿，保留第 {state.review_round} 轮结果", interaction_mode=interaction_mode)
+                state.workflow_phase = "done"
+                _checkpoint(state, checkpoint_path, reason="user_stopped_review", node="done")
+                break
         else:
             print(f"| [WARN] 达到最大审稿轮数 {state.max_review_rounds}，请人工复核。")
             _write_runtime_status("done", "达到最大审稿轮数，等待人工复核", interaction_mode=interaction_mode)

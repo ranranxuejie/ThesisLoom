@@ -29,12 +29,26 @@ ThesisLoom 用于自动生成论文草稿，并支持检索、研究空白生成
 建议环境：
 
 - Python 3.11+
-- Conda（推荐）
+- venv（推荐，打包时更干净、更小）
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+如果你仍希望使用 Conda，也可以：
 
 ```powershell
 conda create -n ENV2026 python=3.11 -y
 conda activate ENV2026
-pip install requests rich
+pip install -r requirements.txt
+```
+
+如果你仍需运行旧版 Streamlit UI（不推荐），再补装：
+
+```powershell
+pip install -r requirements.legacy.txt
 ```
 
 ## 2. 启动方式
@@ -172,60 +186,61 @@ python main.py
 python state_dashboard.py
 ```
 
-## 10. 打包为 EXE（预留方案）
+## 10. 一体化打包（前端 + 后端）
 
-已提供打包脚本（Windows PowerShell）：
-
-```powershell
-./scripts/build_exe.ps1
-```
-
-默认产物：
-
-- `dist/ThesisLoom/ThesisLoom.exe`（onedir）
-
-若需要单文件：
+推荐命令（Windows PowerShell）：
 
 ```powershell
-./scripts/build_exe.ps1 -OneFile
+./scripts/build_desktop_bundle.ps1
 ```
 
-单文件产物：
+该命令会依次完成：
 
-- `dist/ThesisLoom.exe`
+- 使用 venv Python 打包后端（默认 `onefile`，且无控制台窗口）：`dist/ThesisLoomBackend.exe`
+- 默认启用体积优化：排除可选 `OpenSSL/cryptography` 打包链路（不影响标准 `requests + ssl` 调用）
+- 自动复制 sidecar 到 Tauri 目录：`desktop_ui/src-tauri/bin/ThesisLoomBackend-x86_64-pc-windows-msvc.exe`
+- 构建桌面端安装包（Tauri）：`desktop_ui/src-tauri/target/release/bundle`
 
-说明：
+在受限网络环境下，若 `wix` 下载超时，脚本会自动回退到 `--no-bundle`，至少保证产出可运行桌面程序：
 
-- 主程序已预留 frozen 运行路径（打包后可直接启动 Streamlit 控制台）。
-- 首次打包会自动安装/升级 `pyinstaller`。
-- 打包后默认以窗口模式启动；也可通过参数切换：
+- `desktop_ui/src-tauri/target/release/thesisloom_desktop.exe`
+
+如需跳过后端重打包（仅重打前端安装包）：
 
 ```powershell
-./dist/ThesisLoom/ThesisLoom.exe --ui-mode browser
+./scripts/build_desktop_bundle.ps1 -SkipBackend
 ```
 
-## 11. 生成安装程序（Setup）
-
-已新增 Inno Setup 安装脚本，可将 `ThesisLoom.exe` 与 `_internal` 目录一起打包成安装程序。
-
-先确保已完成 EXE 构建：
+如需改为后端 `onedir` 打包（不推荐用于 sidecar 交付）：
 
 ```powershell
-./scripts/build_exe.ps1
+./scripts/build_desktop_bundle.ps1 -BackendMode onedir
 ```
 
-再生成安装包：
+如需保留可选 TLS 后端（会增大包体）：
 
 ```powershell
-./scripts/build_setup.ps1
+./scripts/build_desktop_bundle.ps1 -IncludeOptionalTlsBackends
 ```
 
-默认产物：
-
-- `dist/installer/ThesisLoomSetup.exe`
-
-如果 Inno Setup 不在默认安装目录，可指定编译器路径：
+如需只产出 MSI 安装包：
 
 ```powershell
-./scripts/build_setup.ps1 -InnoCompiler "C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
+cd desktop_ui
+npm run tauri build -- --bundles msi
 ```
+
+如需手动只打包后端：
+
+```powershell
+./scripts/build_backend_exe.ps1
+```
+
+体积说明：
+
+- `desktop_ui/src-tauri/target/release/deps` 主要是 Rust 编译缓存，不是最终交付物。
+- 交付给用户时，优先关注 `desktop_ui/src-tauri/target/release/thesisloom_desktop.exe` 与 `bundle` 目录。
+
+## 11. Setup 构建入口
+
+`./scripts/build_setup.ps1` 已改为调用一体化构建链路（等价于 `build_desktop_bundle.ps1`），用于保持旧命令兼容。

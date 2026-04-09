@@ -96,127 +96,103 @@
 - URL: https://openalex.org/W4321249043
 - Abstract: The purpose of this study is to summarize the pattern recognition (PR) and deep learning (DL) artificial intelligence methods developed for the management of data in the last six years. The methodology used for the study of documents is a content analysis. For this study, 186 references are considered, from which 120 are selected for the literature review. First, a general introduction to artificial intelligence is presented, in which PR/DL methods are studied and their relevance to data management evaluated. Next, a literature review is provided of the most recent applications of PR/DL, and the capacity of these methods to process large volumes of data is evaluated. The analysis of the literature also reveals the main applications, challenges, approaches, advantages, and disadvantages of using these methods. Moreover, we discuss the main measurement instruments; the methodological contributions by study areas and research domain; and major databases, journals, and countries that contribute to the field of study. Finally, we identify emerging research trends, their limitations, and possible future research paths.
 
-## 13. A Comprehensive Survey of the Key Technologies and Challenges Surrounding Vehicular Ad Hoc Networks
-- Authors: Zhenchang Xia, Jia Wu, Libing Wu, Yanjiao Chen, Jian Yang, Philip S. Yu
+## 13. Interaction-Aware Graph Neural Networks for Fault Diagnosis of Complex Industrial Processes
+- Authors: Dongyue Chen, Ruonan Liu, Qinghua Hu, Steven X. Ding
 - Year: 2021
 - Source: OpenAlex
 - Venue: N/A
-- URL: https://openalex.org/W3166863548
-- Abstract: Vehicular ad hoc networks ( VANETs ) and the services they support are an essential part of intelligent transportation. Through physical technologies, applications, protocols, and standards, they help to ensure traffic moves efficiently and vehicles operate safely. This article surveys the current state of play in VANETs development. The summarized and classified include the key technologies critical to the field, the resource-management and safety applications needed for smooth operations, the communications and data transmission protocols that support networking, and the theoretical and environmental constructs underpinning research and development, such as graph neural networks and the Internet of Things. Additionally, we identify and discuss several challenges facing VANETs, including poor safety, poor reliability, non-uniform standards, and low intelligence levels. Finally, we touch on hot technologies and techniques, such as reinforcement learning and 5G communications, to provide an outlook for the future of intelligent transportation systems.
+- URL: https://openalex.org/W4200312990
+- Abstract: Fault diagnosis of complex industrial processes becomes a challenging task due to various fault patterns in sensor signals and complex interactions between different units. However, how to explore the interactions and integrate with sensor signals remains an open question. Considering that the sensor signals and their interactions in an industrial process with the form of nodes and edges can be represented as a graph, this article proposes a novel interaction-aware and data fusion method for fault diagnosis of complex industrial processes, named interaction-aware graph neural networks (IAGNNs). First, to describe the complex interactions in an industrial process, the sensor signals are transformed into a heterogeneous graph with multiple edge types, and the edge weights are learned by the attention mechanism, adaptively. Then, multiple independent graph neural network (GNN) blocks are employed to extract the fault feature for each subgraph with one edge type. Finally, each subgraph feature is concatenated or fused by a weighted summation function to generate the final graph embedding. Therefore, the proposed method can learn multiple interactions between sensor signals and extract the fault feature from each subgraph by message passing operation of GNNs. The final fault feature contains the information from raw data and implicit interactions between sensor signals. The experimental results on the three-phase flow facility and power system (PS) demonstrate the reliable and superior performance of the proposed method for fault diagnosis of complex industrial processes.
 
-## 14. Deep Learning for Anomaly Detection in Time-Series Data: Review, Analysis, and Guidelines
-- Authors: Kukjin Choi, Jihun Yi, Changhwa Park, Sungroh Yoon
-- Year: 2021
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W3198381997
-- Abstract: As industries become automated and connectivity technologies advance, a wide range of systems continues to generate massive amounts of data. Many approaches have been proposed to extract principal indicators from the vast sea of data to represent the entire system state. Detecting anomalies using these indicators on time prevent potential accidents and economic losses. Anomaly detection in multivariate time series data poses a particular challenge because it requires simultaneous consideration of temporal dependencies and relationships between variables. Recent deep learning-based works have made impressive progress in this field. They are highly capable of learning representations of the large-scaled sequences in an unsupervised manner and identifying anomalies from the data. However, most of them are highly specific to the individual use case and thus require domain knowledge for appropriate deployment. This review provides a background on anomaly detection in time-series data and reviews the latest applications in the real world. Also, we comparatively analyze state-of-the-art deep-anomaly-detection models for time series with several benchmark datasets. Finally, we offer guidelines for appropriate model selection and training strategy for deep learning-based time series anomaly detection.
-
-## 15. A Metaverse: Taxonomy, Components, Applications, and Open Challenges
-- Authors: Sangmin Park, Young‐Gab Kim
-- Year: 2022
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4206484811
-- Abstract: Unlike previous studies on the Metaverse based on Second Life, the current Metaverse is based on the social value of Generation Z that online and offline selves are not different. With the technological development of deep learning-based high-precision recognition models and natural generation models, Metaverse is being strengthened with various factors, from mobile-based always-on access to connectivity with reality using virtual currency. The integration of enhanced social activities and neural-net methods requires a new definition of Metaverse suitable for the present, different from the previous Metaverse. This paper divides the concepts and essential techniques necessary for realizing the Metaverse into three components (i.e., hardware, software, and contents) and three approaches (i.e., user interaction, implementation, and application) rather than marketing or hardware approach to conduct a comprehensive analysis. Furthermore, we describe essential methods based on three components and techniques to Metaverse&#x2019;s representative Ready Player One, Roblox, and Facebook research in the domain of films, games, and studies. Finally, we summarize the limitations and directions for implementing the immersive Metaverse as social influences, constraints, and open challenges.
-
-## 16. Load Forecasting Techniques for Power System: Research Challenges and Survey
-- Authors: Naqash Ahmad, Yazeed Yasin Ghadi, Muhammad Adnan, Mansoor Ali
-- Year: 2022
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4285122835
-- Abstract: The main and pivot part of electric companies is the load forecasting. Decision-makers and think tank of power sectors should forecast the future need of electricity with large accuracy and small error to give uninterrupted and free of load shedding power to consumers. The demand of electricity can be forecasted amicably by many Machine Learning (ML), Deep Learning (DL) and Artificial Intelligence (AI) techniques among which hybrid methods are most popular. The present technologies of load forecasting and present work regarding combination of various ML, DL and AI algorithms are reviewed in this paper. The comprehensive review of single and hybrid forecasting models with functions; advantages and disadvantages are discussed in this paper. The comparison between the performance of the models in terms of Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), and Mean Absolute Percentage Error (MAPE) values are compared and discussed with literature of different models to support the researchers to select the best model for load prediction. This comparison validates the fact that the hybrid forecasting models will provide a more optimal solution.
-
-## 17. Deep Learning in Smart Grid Technology: A Review of Recent Advancements and Future Prospects
-- Authors: Mohamed Massaoudi, Haitham Abu‐Rub, Shady S. Refaat, Inès Chihi, Fakhreddine S. Oueslati
-- Year: 2021
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W3147059732
-- Abstract: The current electric power system witnesses a significant transition into Smart Grids (SG) as a promising landscape for high grid reliability and efficient energy management. This ongoing transition undergoes rapid changes, requiring a plethora of advanced methodologies to process the big data generated by various units. In this context, SG stands tied very closely to Deep Learning (DL) as an emerging technology for creating a more decentralized and intelligent energy paradigm while integrating high intelligence in supervisory and operational decision-making. Motivated by the outstanding success of DL-based prediction methods, this article attempts to provide a thorough review from a broad perspective on the state-of-the-art advances of DL in SG systems. Firstly, a bibliometric analysis has been conducted to categorize this review's methodology. Further, we taxonomically delve into the mechanism behind some of the trending DL algorithms. We then showcase the DL enabling technologies in SG, such as federated learning, edge intelligence, and distributed computing. Finally, challenges and research frontiers are provided to serve as guidelines for future work in the futuristic power grid domain. This study's core objective is to foster the synergy between these two fields for decision-makers and researchers to accelerate DL's practical deployment for SG systems.
-
-## 18. Internet of Things and Wireless Sensor Networks for Smart Agriculture Applications: A Survey
-- Authors: Md. Najmul Mowla, Neazmul Mowla, A. F. M. Shahen Shah, Khaled M. Rabie, Thokozani Shongwe
-- Year: 2023
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4390096796
-- Abstract: The increasing food scarcity necessitates sustainable agriculture achieved through automation to meet the growing demand. Integrating the Internet of Things (IoT) and Wireless Sensor Networks (WSNs) is crucial in enhancing food production across various agricultural domains, encompassing irrigation, soil moisture monitoring, fertilizer optimization and control, early-stage pest and crop disease management, and energy conservation. Wireless application protocols such as ZigBee, WiFi, SigFox, and LoRaWAN are commonly employed to collect real-time data for monitoring purposes. Embracing advanced technology is imperative to ensure efficient annual production. Therefore, this study emphasizes a comprehensive, future-oriented approach, delving into IoT-WSNs, wireless network protocols, and their applications in agriculture since 2019. It thoroughly discusses the overview of IoT and WSNs, encompassing their architectures and summarization of network protocols. Furthermore, the study addresses recent issues and challenges related to IoT-WSNs and proposes mitigation strategies. It provides clear recommendations for the future, emphasizing the integration of advanced technology aiming to contribute to the future development of smart agriculture systems.
-
-## 19. AI-based fog and edge computing: A systematic review, taxonomy and future directions
-- Authors: Sundas Iftikhar, Sukhpal Singh Gill, Chenghao Song, Minxian Xu, Mohammad Sadegh Aslanpour, Adel N. Toosi, Junhui Du, Huaming Wu, Shreya Ghosh, Deepraj Chowdhury, Muhammed Golec, Mohit Kumar, Ahmed M. Abdelmoniem, Félix Cuadrado, Blesson Varghese, Omer Rana, Schahram Dustdar, Steve Uhlig
-- Year: 2022
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4312084078
-- Abstract: N/A
-
-## 20. A Comprehensive Survey on TinyML
-- Authors: Youssef Abadade, Anas Temouden, Hatim Bamoumen, Nabil Benamar, Yousra Chtouki, Abdelhakim Hafid
-- Year: 2023
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4383751021
-- Abstract: Recent spectacular progress in computational technologies has led to an unprecedented boom in the field of Artificial Intelligence (AI). AI is now used in a plethora of research areas and has demonstrated its capability to bring new approaches and solutions to various research problems. However, the extensive computation required to train AI algorithms comes with a cost. Driven by the need to reduce the energy consumption, the carbon footprint and the cost of computers running machine learning algorithms, TinyML is nowadays considered as a promising AI alternative focusing on technologies and applications for extremely low-profile devices. This paper presents the results of a literature survey of all TinyML applications and related research efforts. Our survey builds a taxonomy of TinyML techniques that have been used so far to bring new solutions to various domains, such as healthcare, smart farming, environment, and anomaly detection. Finally, this survey highlights the remaining challenges and points out possible future research directions. We anticipate that this survey will motivate further discussions on the various fields of applications of TinyML and the synergy of resource-constrained devices and edge intelligence.
-
-## 21. Intelligent information systems for power grid fault analysis by computer communication technology
-- Authors: Ronglong Xu, Jing Zhang
-- Year: 2025
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4406471310
-- Abstract: This study aims to enhance the intelligence level of power grid fault analysis to address increasingly complex fault scenarios and ensure grid stability and security. To this end, an intelligent information system for power grid fault analysis, leveraging improved computer communication technology, is proposed and developed. The system incorporates a novel fault diagnosis model, combining advanced communication technologies such as distributed computing, real-time data transmission, cloud computing, and big data analytics, to establish a multi-layered information processing architecture for grid fault analysis. Specifically, this study introduces a fusion model integrating Transformer self-attention mechanisms with graph neural networks (GNNs) based on conventional fault diagnosis techniques. GNNs capture the complex relationships between different nodes within the grid topology, effectively identifying power transmission characteristics and fault propagation paths across grid nodes. The Transformer’s self-attention mechanism processes time-series operational data from the grid, enabling precise identification of temporal dependencies in fault characteristics. To improve system response speed, edge computing moves portions of fault data preprocessing and analysis to edge nodes near data sources, significantly reducing transmission latency and enhancing real-time diagnosis capability. Experimental results demonstrate that the proposed model achieves superior diagnostic performance across various fault types (e.g., short circuits, overloads, equipment failures) in simulation scenarios. The system achieves a fault identification and location accuracy of 99.2%, an improvement of over 10% compared to traditional methods, with an average response time of 85 milliseconds, approximately 43% faster than existing technologies. Moreover, the system exhibits strong robustness in complex scenarios, with an average fault prediction error rate of just 1.1% across multiple simulations. This study provides a novel solution for intelligent power grid fault diagnosis and management, establishing a technological foundation for smart grid operations.
-
-## 22. A Review of Graph Neural Networks and Their Applications in Power Systems
-- Authors: Wenlong Liao, Birgitte Bak‐Jensen, Jayakrishnan Radhakrishna Pillai, Yuelong Wang, Yusen Wang
-- Year: 2022
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W3183845133
-- Abstract: Deep neural networks have revolutionized many machine learning tasks in power systems, ranging from pattern recognition to signal processing. The data in these tasks are typically represented in Euclidean domains. Nevertheless, there is an increasing number of applications in power systems, where data are collected from non-Euclidean domains and represented as graph-structured data with high-dimensional features and interdependency among nodes. The complexity of graph-structured data has brought significant challenges to the existing deep neural networks defined in Euclidean domains. Recently, many publications generalizing deep neural networks for graph-structured data in power systems have emerged. In this paper, a comprehensive overview of graph neural networks (GNNs) in power systems is proposed. Specifically, several classical paradigms of GNN structures, e. g., graph convolutional networks, are summarized. Key applications in power systems such as fault scenario application, time-series prediction, power flow calculation, and data generation are reviewed in detail. Further-more, main issues and some research trends about the applications of GNNs in power systems are discussed.
-
-## 23. Convolutional Neural Networks: A Survey
-- Authors: Moez Krichen
-- Year: 2023
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4385342469
-- Abstract: Artificial intelligence (AI) has become a cornerstone of modern technology, revolutionizing industries from healthcare to finance. Convolutional neural networks (CNNs) are a subset of AI that have emerged as a powerful tool for various tasks including image recognition, speech recognition, natural language processing (NLP), and even in the field of genomics, where they have been utilized to classify DNA sequences. This paper provides a comprehensive overview of CNNs and their applications in image recognition tasks. It first introduces the fundamentals of CNNs, including the layers of CNNs, convolution operation (Conv_Op), Feat_Maps, activation functions (Activ_Func), and training methods. It then discusses several popular CNN architectures such as LeNet, AlexNet, VGG, ResNet, and InceptionNet, and compares their performance. It also examines when to use CNNs, their advantages and limitations, and provides recommendations for developers and data scientists, including preprocessing the data, choosing appropriate hyperparameters (Hyper_Param), and evaluating model performance. It further explores the existing platforms and libraries for CNNs such as TensorFlow, Keras, PyTorch, Caffe, and MXNet, and compares their features and functionalities. Moreover, it estimates the cost of using CNNs and discusses potential cost-saving strategies. Finally, it reviews recent developments in CNNs, including attention mechanisms, capsule networks, transfer learning, adversarial training, quantization and compression, and enhancing the reliability and efficiency of CNNs through formal methods. The paper is concluded by summarizing the key takeaways and discussing the future directions of CNN research and development.
-
-## 24. A review of graph neural networks: concepts, architectures, techniques, challenges, datasets, applications, and future directions
-- Authors: Bharti Khemani, Shruti Patil, Ketan Kotecha, Sudeep Tanwar
+## 14. Causal intervention graph neural network for fault diagnosis of complex industrial processes
+- Authors: Ruonan Liu, Quanhu Zhang, Di Lin, Weidong Zhang, Steven X. Ding
 - Year: 2024
 - Source: OpenAlex
 - Venue: N/A
-- URL: https://openalex.org/W4390906246
-- Abstract: Abstract Deep learning has seen significant growth recently and is now applied to a wide range of conventional use cases, including graphs. Graph data provides relational information between elements and is a standard data format for various machine learning and deep learning tasks. Models that can learn from such inputs are essential for working with graph data effectively. This paper identifies nodes and edges within specific applications, such as text, entities, and relations, to create graph structures. Different applications may require various graph neural network (GNN) models. GNNs facilitate the exchange of information between nodes in a graph, enabling them to understand dependencies within the nodes and edges. The paper delves into specific GNN models like graph convolution networks (GCNs), GraphSAGE, and graph attention networks (GATs), which are widely used in various applications today. It also discusses the message-passing mechanism employed by GNN models and examines the strengths and limitations of these models in different domains. Furthermore, the paper explores the diverse applications of GNNs, the datasets commonly used with them, and the Python libraries that support GNN models. It offers an extensive overview of the landscape of GNN research and its practical implementations.
+- URL: https://openalex.org/W4400438563
+- Abstract: N/A
 
-## 25. Generalization of Graph Neural Network Models for Distribution Grid Fault Detection
-- Authors: Burak Karabulut, Carlo Manna, Chris Develder
-- Year: 2025
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4415398291
-- Abstract: Fault detection in power distribution grids is critical for ensuring system reliability and preventing costly outages. Moreover, fault detection methodologies should remain robust to evolving grid topologies caused by factors such as reconfigurations, equipment failures, and Distributed Energy Resource (DER) integration. Current data-driven state-of-the-art methods use Recurrent Neural Networks (RNNs) for temporal modeling and Graph Neural Networks (GNNs) for spatial learning, in an RNN+GNN pipeline setting (RGNN in short). Specifically, for power system fault diagnosis, Graph Convolutional Networks (GCNs) have been adopted. Yet, various more advanced GNN architectures have been proposed and adopted in domains outside of power systems. In this paper, we set out to systematically and consistently benchmark various GNN architectures in an RNN+GNN pipeline model. Specifically, to the best of our knowledge, we are the first to (i) propose to use GraphSAGE and Graph Attention (GAT, GATv2) in an RGNN for fault diagnosis, and (ii) provide a comprehensive benchmark against earlier proposed RGNN solutions (RGCN) as well as pure RNN models (especially Gated Recurrent Unit (GRU)), particularly (iii) exploring their generalization potential for deployment in different settings than those used for training them. Our experimental results on the IEEE 123-node distribution network show that RGATv2 has superior generalization capabilities, maintaining high performance with an F1-score reduction of ~12% across different topology settings. In contrast, pure RNN models largely fail, experiencing an F1-score reduction of up to ~60%, while other RGNN variants also exhibit significant performance degradation, i.e., up to ~25% lower F1-scores.
-
-## 26. The role of deep learning in urban water management: A critical review
-- Authors: Guangtao Fu, Yiwen Jin, Siao Sun, Zhiguo Yuan, David Butler
-- Year: 2022
-- Source: OpenAlex
-- Venue: N/A
-- URL: https://openalex.org/W4293180257
-- Abstract: Deep learning techniques and algorithms are emerging as a disruptive technology with the potential to transform global economies, environments and societies. They have been applied to planning and management problems of urban water systems in general, however, there is lack of a systematic review of the current state of deep learning applications and an examination of potential directions where deep learning can contribute to solving urban water challenges. Here we provide such a review, covering water demand forecasting, leakage and contamination detection, sewer defect assessment, wastewater system state prediction, asset monitoring and urban flooding. We find that the application of deep learning techniques is still at an early stage as most studies used benchmark networks, synthetic data, laboratory or pilot systems to test the performance of deep learning methods with no practical adoption reported. Leakage detection is perhaps at the forefront of receiving practical implementation into day-to-day operation and management of urban water systems, compared with other problems reviewed. Five research challenges, i.e., data privacy, algorithmic development, explainability and trustworthiness, multi-agent systems and digital twins, are identified as key areas to advance the application and implementation of deep learning in urban water management. Future research and application of deep learning systems are expected to drive urban water systems towards high intelligence and autonomy. We hope this review will inspire research and development that can harness the power of deep learning to help achieve sustainable water management and digitalise the water sector across the world.
-
-## 27. Machine Learning Methods for Small Data Challenges in Molecular Science
-- Authors: Bozheng Dou, Zailiang Zhu, Ekaterina Merkurjev, Ke Lü, Long Chen, Jiang Jian, Yueying Zhu, Jie Liu, Bengong Zhang, Guo‐Wei Wei
+## 15. Causal-Trivial Attention Graph Neural Network for Fault Diagnosis of Complex Industrial Processes
+- Authors: Hao Wang, Ruonan Liu, Steven X. Ding, Qinghua Hu, Zengxiang Li, Hongkuan Zhou
 - Year: 2023
 - Source: OpenAlex
 - Venue: N/A
-- URL: https://openalex.org/W4382516982
-- Abstract: Small data are often used in scientific and engineering research due to the presence of various constraints, such as time, cost, ethics, privacy, security, and technical limitations in data acquisition. However, big data have been the focus for the past decade, small data and their challenges have received little attention, even though they are technically more severe in machine learning (ML) and deep learning (DL) studies. Overall, the small data challenge is often compounded by issues, such as data diversity, imputation, noise, imbalance, and high-dimensionality. Fortunately, the current big data era is characterized by technological breakthroughs in ML, DL, and artificial intelligence (AI), which enable data-driven scientific discovery, and many advanced ML and DL technologies developed for big data have inadvertently provided solutions for small data problems. As a result, significant progress has been made in ML and DL for small data challenges in the past decade. In this review, we summarize and analyze several emerging potential solutions to small data challenges in molecular science, including chemical and biological sciences. We review both basic machine learning algorithms, such as linear regression, logistic regression (LR), <i>k</i>-nearest neighbor (KNN), support vector machine (SVM), kernel learning (KL), random forest (RF), and gradient boosting trees (GBT), and more advanced techniques, including artificial neural network (ANN), convolutional neural network (CNN), U-Net, graph neural network (GNN), Generative Adversarial Network (GAN), long short-term memory (LSTM), autoencoder, transformer, transfer learning, active learning, graph-based semi-supervised learning, combining deep learning with traditional machine learning, and physical model-based data augmentation. We also briefly discuss the latest advances in these methods. Finally, we conclude the survey with a discussion of promising trends in small data challenges in molecular science.
+- URL: https://openalex.org/W4379930959
+- Abstract: In modern industrial systems, components have complex interactions with each other, which makes it become a challenging task to identify the operational conditions of industrial systems. Considering that an industrial system, the embedded components and their interactions can be expressed as nodes and edges in a graph, respectively. Therefore, graph representation algorithms are powerful tools for fault diagnosis of industrial systems. As one of the most commonly used graph representation algorithms, graph neural networks (GNN) mainly follow the law of “learning to attend.” GNN extract training data features learn the statistical correlations between features and labels, resulting in the attended graph favoring for accessing noncausal features as a shortcut for prediction. This shortcut feature is unstable and depends on the data distribution characteristics in the training dataset, which reduces the generalization ability of the classifier. By performing the causal analysis of GNN modeling for graph representation, the results show that shortcut features act as confounding factors between causal features and predictions, causing classifiers to learn wrong correlations. Therefore, to discover patterns of causality and weaken the confounding effects of shortcut features, a causal-trivial attention graph neural network strategy is proposed. First, node and edge representations are given by estimating soft masks. Second, through disentanglement, both causal features and shortcut features are obtained from the graph. Third, the backdoor adjustment of the causal theory is parameterized to combine each causal feature with a variety of shortcut features. Finally, comparative experiments on the three-phase flow facility dataset illustrate the effectiveness of the proposed method.
 
-## 28. Interpreting Black-Box Models: A Review on Explainable Artificial Intelligence
+## 16. Causal Disentangled Graph Neural Network for Fault Diagnosis of Complex Industrial Process
+- Authors: Ruonan Liu, Quanhu Zhang, Di Lin, Weidong Zhang, Steven X. Ding
+- Year: 2024
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4402892200
+- Abstract: Graph neural networks (GNNs) are good at capturing the intricate topologies and dependencies among components and are outstanding in fault diagnosis tasks of complex industrial process. Bias substructures consisting of irrelevant sensor signals and noise data are simpler compared to causal substructures consisting of fault signals, and GNNs tend to utilize the letter to quickly achieve low loss. However, spurious correlations in the bias substructures will mislead predictions. To address this issue, this study takes the disentanglement of causal and bias substructures as the key to improve model stability. A causal disentangled GNN (CDGNN) is proposed. First, sensor signals are transformed into graph data employing an attention mechanism to capture the interactions between them. Then, a causal disentanglement learning module is designed to extract causal subgraphs from input graphs. Finally, causal subgraph features from different source machines are aggregated to form a complete graph representation. Experimental results on two complex industrial datasets indicate that CDGNN is an effective and stable method for fault diagnosis.
+
+## 17. Bayesian Hierarchical Graph Neural Networks With Uncertainty Feedback for Trustworthy Fault Diagnosis of Industrial Processes
+- Authors: Dongyue Chen, Zongxia Xie, Ruonan Liu, W.W.H. Yu, Qinghua Hu, Xianling Li, Steven X. Ding
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4387682266
+- Abstract: Deep learning (DL) methods have been widely applied to intelligent fault diagnosis of industrial processes and achieved state-of-the-art performance. However, fault diagnosis with point estimate may provide untrustworthy decisions. Recently, Bayesian inference shows to be a promising approach to trustworthy fault diagnosis by quantifying the uncertainty of the decisions with a DL model. The uncertainty information is not involved in the training process, which does not help the learning of highly uncertain samples and has little effect on improving the fault diagnosis performance. To address this challenge, we propose a Bayesian hierarchical graph neural network (BHGNN) with an uncertainty feedback mechanism, which formulates a trustworthy fault diagnosis on the Bayesian DL (BDL) framework. Specifically, BHGNN captures the epistemic uncertainty and aleatoric uncertainty via a variational dropout approach and utilizes the uncertainty information of each sample to adjust the strength of the temporal consistency (TC) constraint for robust feature learning. Meanwhile, the BHGNN method models the process data as a hierarchical graph (HG) by leveraging the interaction-aware module and physical topology knowledge of the industrial process, which integrates data with domain knowledge to learn fault representation. Moreover, the experiments on a three-phase flow facility (TFF) and secure water treatment (SWaT) show superior and competitive performance in fault diagnosis and verify the trustworthiness of the proposed method.
+
+## 18. Fusing logic rule-based hybrid variable graph neural network approaches to fault diagnosis of industrial processes
+- Authors: Min Yin, Jince Li, Yilin Shi, Qi Chu, Hongguang Li
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4387125947
+- Abstract: N/A
+
+## 19. Information-based Gradient enhanced Causal Learning Graph Neural Network for fault diagnosis of complex industrial processes
+- Authors: Ruonan Liu, Yunfei Xie, Di Lin, Weidong Zhang, Steven X. Ding
+- Year: 2024
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4401972311
+- Abstract: N/A
+
+## 20. Casual inference-enabled graph neural networks for generalized fault diagnosis in industrial IoT system
+- Authors: Zhao Zhang, Zhao Zhang, Qi Li, Shenbo Liu, Zhigang Zhang, Zhigang Zhang, Wei Chen, Lijun Tang
+- Year: 2024
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4404851206
+- Abstract: N/A
+
+## 21. Deep Graph Convolutional Neural Network for Fault Diagnosis of Complex Industrial Processes
+- Authors: Chuan Zhang, Qunxiong Zhu, Yan‐Lin He, Yang Zhang, Ming‐Qing Zhang, Yuan Xu
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4396234747
+- Abstract: As industrial production processes become increasingly complex and production scales continue to expand, ensuring the safety of operational processes has evolved into an exceptionally challenging task. Industrial process data variables are interconnected and coupled, how to effectively extract the correlation information between variables has become the key to improve the fault diagnosis accuracy. To address these challenges, this paper proposes a deep graph convolutional neural network (DGCN) for fault diagnosis in complex industrial processes. Firstly, the fault data in the time domain is analysed by wavelet transform to convert the time domain data into time-frequency data. And the graph used to represent the potential interactions of industrial processes is constructed according to the Pearson correlation coefficient. At the same time, considering the weak connection between some nodes, appropriate threshold sparse edges are used to improve the anti-interference ability of the model. Secondly, a graph convolution network (GCN) is utilised for information transfer and aggregation between nodes, and the feature representation of the nodes is learnt through multi-layer graph convolution operations. Finally, the softmax classifier transforms the learned feature representation of each fault into a probability distribution to complete the fault diagnosis task. Experimental results on the Tennessee Eastman (TE) process show that the DGCN model exhibits good fault diagnosis.
+
+## 22. Recent advances in the application of deep learning for fault diagnosis of rotating machinery using vibration signals
+- Authors: Bayu Adhi Tama, Malinda Vania, Seung‐Chul Lee, Sunghoon Lim
+- Year: 2022
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4303710087
+- Abstract: Abstract Vibration measurement and monitoring are essential in a wide variety of applications. Vibration measurements are critical for diagnosing industrial machinery malfunctions because they provide information about the condition of the rotating equipment. Vibration analysis is considered the most effective method for predictive maintenance because it is used to troubleshoot instantaneous faults as well as periodic maintenance. Numerous studies conducted in this vein have been published in a variety of outlets. This review documents data-driven and recently published deep learning techniques for vibration-based condition monitoring. Numerous studies were obtained from two reputable indexing databases, Web of Science and Scopus. Following a thorough review, 59 studies were selected for synthesis. The selected studies are then systematically discussed to provide researchers with an in-depth view of deep learning-based fault diagnosis methods based on vibration signals. Additionally, a few remarks regarding future research directions are made, including graph-based neural networks, physics-informed ML, and a transformer convolutional network-based fault diagnosis method.
+
+## 23. Spatio-Temporal Graph Neural Network for Fault Diagnosis Modeling of Industrial Robot
+- Authors: Wenbo Xiao, Yuwei Wan, Zhuowei Wang, Chong Chen
+- Year: 2025
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4413158356
+- Abstract: Industrial robots play a critical role in modern industrial production. They are widely used in tasks requiring high precision and efficiency, such as manufacturing, assembly, and material handling. However, since industrial robots often operate in complex and changing environments, long-term use inevitably leads to issues such as component aging, wear, or other potential faults. These faults not only reduce production efficiency but may also cause equipment damage, production interruptions, or even safety risks. Industrial robot systems are typically composed of multiple highly interconnected components and sensors. Graph Neural Networks (GNNs), which can effectively model multivariable data, have been widely applied to modeling and analyzing such systems. However, different methods of graph construction vary significantly in their ability to capture system structures, dynamic relationships, and multivariable interactions. The impact of these differences on downstream fault diagnosis tasks remains an area that requires further research. To address these challenges, this study proposes a GNN-based fault diagnosis framework to demonstrate the practical effects of different graph construction methods. First, we transformed the state monitoring data of industrial robots into three different graph structures using KNN, radius, and path-based methods. Then, we used a graph attention network to capture the spatial dependencies among various variables. At the same time, a parallel encoder with diagonal masking self-attention (DMSA) was designed to model temporal dependencies. A spatiotemporal attention module was then applied to extract both spatial and temporal features. Finally, the type of fault present in the data was determined. Experimental studies based on real-world industrial robot datasets show that different graph construction methods significantly influence fault diagnosis accuracy. The proposed framework achieved diagnostic accuracies of 87.11%, 88.85%, and 92.68% under the three graph construction methods, respectively.
+
+## 24. Enhancing IoT Cybersecurity with Graph Neural Networks: Advanced Anomaly Detection and Threat Mitigation
+- Authors: Harish Narne
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4404508304
+- Abstract: The increasing adoption of Internet of Things (IoT) devices has transformed industries by enabling seamless connectivity and data - driven operations. However, the interconnected nature of IoT networks has introduced significant cybersecurity risks, including malware attacks, Distributed Denial of Service (DDoS) attacks, and data breaches, which can compromise entire ecosystems. Traditional cybersecurity measures, such as firewalls and intrusion detection systems, struggle to address IoT environments' dynamic, heterogeneous, and resource - constrained nature. Graph Neural Networks (GNNs) have emerged as a powerful tool to tackle these challenges by leveraging the graph - based structure of IoT networks. This paper presents a novel methodology to enhance IoT cybersecurity through GNNs by capturing complex device interactions, detecting anomalies, and mitigating cyber threats in real time. Key contributions include advanced graph representation learning techniques, scalable GNN architectures, and their integration with existing security systems. Experimental evaluations using benchmark datasets and simulated IoT environments demonstrate superior accuracy (95%) in anomaly detection, reduced false - positive rates (by 30%), and real - time threat mitigation capabilities. The proposed approach also addresses scalability across large IoT networks and cross - domain generalization, making it suitable for diverse applications, including industrial IoT (IIoT), smart homes, and critical infrastructure. This study highlights the transformative potential of GNNs in advancing IoT cybersecurity and provides a roadmap for developing resilient, adaptive, and cost - effective solutions in the face of an evolving threat landscape.
+
+## 25. Interpreting Black-Box Models: A Review on Explainable Artificial Intelligence
 - Authors: Vikas Hassija, Vinay Chamola, A. Mahapatra, Abhinandan Singal, Divyansh Goel, Kaizhu Huang, Simone Scardapane, Indro Spinelli, Mufti Mahmud, Amir Hussain
 - Year: 2023
 - Source: OpenAlex
@@ -224,13 +200,37 @@
 - URL: https://openalex.org/W4386142022
 - Abstract: Abstract Recent years have seen a tremendous growth in Artificial Intelligence (AI)-based methodological development in a broad range of domains. In this rapidly evolving field, large number of methods are being reported using machine learning (ML) and Deep Learning (DL) models. Majority of these models are inherently complex and lacks explanations of the decision making process causing these models to be termed as 'Black-Box'. One of the major bottlenecks to adopt such models in mission-critical application domains, such as banking, e-commerce, healthcare, and public services and safety, is the difficulty in interpreting them. Due to the rapid proleferation of these AI models, explaining their learning and decision making process are getting harder which require transparency and easy predictability. Aiming to collate the current state-of-the-art in interpreting the black-box models, this study provides a comprehensive analysis of the explainable AI (XAI) models. To reduce false negative and false positive outcomes of these back-box models, finding flaws in them is still difficult and inefficient. In this paper, the development of XAI is reviewed meticulously through careful selection and analysis of the current state-of-the-art of XAI research. It also provides a comprehensive and in-depth evaluation of the XAI frameworks and their efficacy to serve as a starting point of XAI for applied and theoretical researchers. Towards the end, it highlights emerging and critical issues pertaining to XAI research to showcase major, model-specific trends for better explanation, enhanced transparency, and improved prediction accuracy.
 
-## 29. A Survey on Intelligent Internet of Things: Applications, Security, Privacy, and Future Directions
+## 26. A Survey on Intelligent Internet of Things: Applications, Security, Privacy, and Future Directions
 - Authors: Ons Aouedi, Thai-Hoc Vu, Alessio Sacco, Dinh C. Nguyen, Kandaraj Piamrat, Guido Marchetto, Quoc‐Viet Pham
 - Year: 2024
 - Source: OpenAlex
 - Venue: N/A
 - URL: https://openalex.org/W4400770731
 - Abstract: The rapid advances in the Internet of Things (IoT) have promoted a revolution in communication technology and offered various customer services. Artificial intelligence (AI) techniques have been exploited to facilitate IoT operations and maximize their potential in modern application scenarios. In particular, the convergence of IoT and AI has led to a new networking paradigm called Intelligent IoT (IIoT), which has the potential to significantly transform businesses and industrial domains. This paper presents a comprehensive survey of IIoT by investigating its significant applications in mobile networks, as well as its associated security and privacy issues. Specifically, we explore and discuss the roles of IIoT in a wide range of key application domains, from smart healthcare and smart cities to smart transportation and smart industries. Through such extensive discussions, we investigate important security issues in IIoT networks, where network attacks, confidentiality, integrity, and intrusion are analyzed, along with a discussion of potential countermeasures. Privacy issues in IIoT networks were also surveyed and discussed, including data, location, and model privacy leakage. Finally, we outline several key challenges and highlight potential research directions in this important area.
+
+## 27. Explainable Artificial Intelligence Applications in Cyber Security: State-of-the-Art in Research
+- Authors: Zhibo Zhang, Hussam Al Hamadi, Ernesto Damiani, Chan Yeob Yeun, Fatma Taher
+- Year: 2022
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4295854586
+- Abstract: This survey presents a comprehensive review of current literature on Explainable Artificial Intelligence (XAI) methods for cyber security applications. Due to the rapid development of Internet-connected systems and Artificial Intelligence in recent years, Artificial Intelligence including Machine Learning and Deep Learning has been widely utilized in the fields of cyber security including intrusion detection, malware detection, and spam filtering. However, although Artificial Intelligence-based approaches for the detection and defense of cyber attacks and threats are more advanced and efficient compared to the conventional signature-based and rule-based cyber security strategies, most Machine Learning-based techniques and Deep Learning-based techniques are deployed in the “black-box” manner, meaning that security experts and customers are unable to explain how such procedures reach particular conclusions. The deficiencies of transparencies and interpretability of existing Artificial Intelligence techniques would decrease human users’ confidence in the models utilized for the defense against cyber attacks, especially in current situations where cyber attacks become increasingly diverse and complicated. Therefore, it is essential to apply XAI in the establishment of cyber security models to create more explainable models while maintaining high accuracy and allowing human users to comprehend, trust, and manage the next generation of cyber defense mechanisms. Although there are papers reviewing Artificial Intelligence applications in cyber security areas and the vast literature on applying XAI in many fields including healthcare, financial services, and criminal justice, the surprising fact is that there are currently no survey research articles that concentrate on XAI applications in cyber security. Therefore, the motivation behind the survey is to bridge the research gap by presenting a detailed and up-to-date survey of XAI approaches applicable to issues in the cyber security field. Our work is the first to propose a clear roadmap for navigating the XAI literature in the context of applications in cyber security.
+
+## 28. Deep neural networks in the cloud: Review, applications, challenges and research directions
+- Authors: Kit Yan Chan, Bilal Abu-Salih, Raneem Qaddoura, Ala’ M. Al-Zoubi, Vasile Palade, Duc-Son Pham, Javier Del Ser, Khan Muhammad
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4376613177
+- Abstract: Deep neural networks (DNNs) are currently being deployed as machine learning technology in a wide range of important real-world applications. DNNs consist of a huge number of parameters that require millions of floating-point operations (FLOPs) to be executed both in learning and prediction modes. A more effective method is to implement DNNs in a cloud computing system equipped with centralized servers and data storage sub-systems with high-speed and high-performance computing capabilities. This paper presents an up-to-date survey on current state-of-the-art deployed DNNs for cloud computing. Various DNN complexities associated with different architectures are presented and discussed alongside the necessities of using cloud computing. We also present an extensive overview of different cloud computing platforms for the deployment of DNNs and discuss them in detail. Moreover, DNN applications already deployed in cloud computing systems are reviewed to demonstrate the advantages of using cloud computing for DNNs. The paper emphasizes the challenges of deploying DNNs in cloud computing systems and provides guidance on enhancing current and new deployments.
+
+## 29. Data-driven and Knowledge-based predictive maintenance method for industrial robots for the production stability of intelligent manufacturing
+- Authors: Xiaoqiao Wang, Mingzhou Liu, Conghu Liu, Lin Ling, Xi Zhang
+- Year: 2023
+- Source: OpenAlex
+- Venue: N/A
+- URL: https://openalex.org/W4385687477
+- Abstract: N/A
 
 ## 30. Digital Twin: Enabling Technologies, Challenges and Open Research
 - Authors: Aidan Fuller, Zhong Fan, Charles Day, Chris Barlow

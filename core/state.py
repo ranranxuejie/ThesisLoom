@@ -3,7 +3,7 @@ import os, json
 import glob
 import re
 from datetime import datetime
-from core.project_paths import project_path, shared_input_path
+from core.project_paths import project_path, shared_input_path, get_active_project_name
 
 
 def resolve_inputs_path() -> str:
@@ -25,11 +25,10 @@ def read_text_if_exists(path: str) -> str:
 
 
 def build_output_paths(model: str, topic: str, prompt_language: str) -> tuple[str, str]:
-    safe_model = ''.join(ch for ch in str(model) if ch not in '\\/*?:"<>|').replace(" ", "_")
-    base_topic = topic if str(topic).strip() else "auto_title_pending"
-    safe_topic = ''.join(ch for ch in base_topic if ch not in '\\/*?:"<>|').replace(" ", "_")
-    output = project_path("completed_history", f"{safe_model}_{safe_topic}_{prompt_language}.md")
-    checkpoint = project_path("completed_history", f"{safe_model}_{safe_topic}_{prompt_language}_checkpoint.json")
+    project_name = get_active_project_name()
+    safe_project = ''.join(ch for ch in str(project_name) if ch not in '\\/*?:"<>|').replace(" ", "_")
+    output = project_path("completed_history", f"{safe_project}_paper.md")
+    checkpoint = project_path("completed_history", f"{safe_project}_checkpoint.json")
     return output, checkpoint
 
 
@@ -46,12 +45,16 @@ def _safe_name(text: str) -> str:
 
 
 def find_latest_checkpoint_for_resume(model: str, prompt_language: str) -> str:
-    safe_model = _safe_name(model)
-    safe_lang = _safe_name(prompt_language)
-    pattern = project_path("completed_history", f"{safe_model}_*_{safe_lang}_checkpoint.json")
+    project_name = get_active_project_name()
+    safe_project = ''.join(ch for ch in str(project_name) if ch not in '\\/*?:"<>|').replace(" ", "_")
+    pattern = project_path("completed_history", f"{safe_project}_checkpoint.json")
     files = glob.glob(pattern)
     if not files:
-        return ""
+        # Fallback to older formats
+        old_pattern = project_path("completed_history", "*_checkpoint.json")
+        files = glob.glob(old_pattern)
+        if not files:
+            return ""
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files[0]
 
@@ -212,6 +215,27 @@ def save_state_checkpoint(state: "PaperWriterState", checkpoint_path: str) -> No
     checkpoint_dir = os.path.dirname(checkpoint_path)
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Sync latest params from inputs.json before saving
+    try:
+        inputs_path = resolve_inputs_path()
+        if os.path.exists(inputs_path):
+            with open(inputs_path, "r", encoding="utf-8-sig") as f:
+                latest_inputs = json.load(f)
+            if isinstance(latest_inputs, dict):
+                # Update configurable params to latest values
+                for key in ["model", "language", "base_url", "model_api_key", "ark_api_key",
+                            "openalex_api_key", "paper_search_limit", "max_review_rounds"]:
+                    if key in latest_inputs:
+                        val = latest_inputs[key]
+                        if hasattr(state, key):
+                            if key in ("paper_search_limit", "max_review_rounds"):
+                                setattr(state, key, int(val))
+                            else:
+                                setattr(state, key, str(val).strip() if isinstance(val, str) else val)
+    except Exception:
+        pass
+
     snapshot = state.export_checkpoint()
     try:
         snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
@@ -227,10 +251,9 @@ def save_state_checkpoint(state: "PaperWriterState", checkpoint_path: str) -> No
         "phase": str(snapshot.get("workflow_phase", "")),
         "node": str(snapshot.get("current_node", "")),
         "reason": str(snapshot.get("last_checkpoint_reason", "")),
-        "state": snapshot,
     }
 
-    # 追加到 topic 级历史与项目级历史，避免 checkpoint 仅保留最后一次状态。
+    # Append lightweight metadata to history (without full state to keep files lean)
     topic_history_path = _checkpoint_history_path(checkpoint_path)
     global_history_path = project_path("completed_history", "workflow_state_history.json")
     try:
@@ -438,6 +461,9 @@ class PaperWriterState:
         self.current_major_chapter_id: str = str(inputs.get("current_major_chapter_id", "")).strip()
         self.current_sub_chapter_id: str = str(inputs.get("current_sub_chapter_id", "")).strip()
         self.current_node: str = str(inputs.get("current_node", "")).strip()
+        raw_next_steps = inputs.get("next_steps_plan", [])
+        self.next_steps_plan = [x for x in raw_next_steps if isinstance(x, dict)] if isinstance(raw_next_steps, list) else []
+        self.next_steps_updated_at: str = str(inputs.get("next_steps_updated_at", "")).strip()
         self.last_checkpoint_reason: str = str(inputs.get("last_checkpoint_reason", "")).strip()
         self.last_checkpoint_time: str = str(inputs.get("last_checkpoint_time", "")).strip()
         self.resume_count: int = int(inputs.get("resume_count", 0))

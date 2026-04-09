@@ -1,9 +1,4 @@
 requests
 rich
-streamlit
-streamlit-autorefresh
-pywebview
 volcengine-python-sdk[ark]
-fastapi
-uvicorn
-httpx
+send2trash
