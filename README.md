@@ -7,6 +7,25 @@ ThesisLoom 是一个论文写作工作流系统，包含：
 
 当前主链路已不再使用 Streamlit。桌面端启动时会自动拉起后端，关闭桌面端时会自动回收后端进程。
 
+## 0. 项目结构总览
+
+核心目录：
+
+- core/: 状态定义、节点实现、模型调用与项目路径管理
+- workflow.py: 主状态机（pre_research/drafting/review_pending/reviewing）
+- backend_api.py: HTTP API 实现（桌面端唯一后端入口）
+- desktop_backend.py: 启动器（API 服务 + workflow 线程）
+- desktop_ui/: Tauri + React 前端与安装包工程
+- scripts/: 后端/桌面端打包脚本
+- projects/: 项目工作目录（输入、断点、输出、日志）
+- history/legacy_frontend/: 旧 Streamlit 历史快照（不参与主链路）
+
+运行关系：
+
+1. Tauri 桌面端拉起 sidecar（ThesisLoomBackend）。
+2. sidecar 内启动 `desktop_backend.py`，提供 API 并运行工作流。
+3. 前端按轮询 + 动作提交驱动人机协作流程。
+
 ## 1. 快速开始
 
 ### 1.1 环境准备
@@ -131,9 +150,24 @@ python desktop_backend.py --host 127.0.0.1 --port 8765 --interaction web
 ### 5.2 仅构建 MSI
 
 ```powershell
+# 推荐：在仓库根目录触发，统一走脚本
+./scripts/build_setup.ps1 -PythonExe .venv/Scripts/python.exe
+
+# 若仅前端改动，跳过后端重打包
+./scripts/build_setup.ps1 -PythonExe .venv/Scripts/python.exe -SkipBackend
+
+# 仅触发 Tauri msi（需确保 sidecar 已是最新）
 cd desktop_ui
 npm run tauri build -- --bundles msi
 ```
+
+MSI 输出目录：
+
+- `desktop_ui/src-tauri/target/release/bundle/msi`
+
+发布建议：
+
+- 仅打包 demo 模板项目，避免把个人项目数据、私有模型配置、私有 base_url 写入安装包。
 
 ### 5.3 兼容脚本说明
 

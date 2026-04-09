@@ -68,6 +68,42 @@ function New-DemoPackageAssets {
     )
   }
 
+  # Guidance/review templates are required by workflow initialization.
+  $guidanceDir = Join-Path $inputsDir "guidance"
+  $reviewDir = Join-Path $inputsDir "review"
+  New-Item -ItemType Directory -Force -Path $guidanceDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $reviewDir | Out-Null
+
+  $workspaceGuidanceDir = Join-Path $repoRoot "inputs/guidance"
+  if (Test-Path $workspaceGuidanceDir) {
+    Get-ChildItem -Path $workspaceGuidanceDir -Filter "*.md" -File | ForEach-Object {
+      Copy-Item -Path $_.FullName -Destination (Join-Path $guidanceDir $_.Name) -Force
+    }
+  }
+
+  $workspaceReviewDir = Join-Path $repoRoot "inputs/review"
+  if (Test-Path $workspaceReviewDir) {
+    Get-ChildItem -Path $workspaceReviewDir -Filter "*.md" -File | ForEach-Object {
+      Copy-Item -Path $_.FullName -Destination (Join-Path $reviewDir $_.Name) -Force
+    }
+  }
+
+  if (-not (Test-Path (Join-Path $guidanceDir "overall_guidance.md"))) {
+    [System.IO.File]::WriteAllText(
+      (Join-Path $guidanceDir "overall_guidance.md"),
+      "# Overall Guidance`n`nProvide overall writing guidance for all sections.`n",
+      [System.Text.Encoding]::UTF8
+    )
+  }
+
+  if (-not (Test-Path (Join-Path $reviewDir "overall_review.md"))) {
+    [System.IO.File]::WriteAllText(
+      (Join-Path $reviewDir "overall_review.md"),
+      "# Overall Review Rules`n`nProvide global review criteria and quality checks.`n",
+      [System.Text.Encoding]::UTF8
+    )
+  }
+
   return (Resolve-Path $inputsDir).Path
 }
 

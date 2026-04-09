@@ -1069,25 +1069,5 @@ footer.notice.error {
   body,
   #root {
     overflow-x: hidden;
-    overflow-y: hidden;
-  }
-
-  .app-shell {
-    height: calc(100vh - 34px);
-  }
-
-  .modern-shell {
-    min-height: 0;
-  }
-
-  .content-area {
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding-right: 2px;
-  }
-
-  .sidebar {
-    max-height: 100%;
   }
 }
