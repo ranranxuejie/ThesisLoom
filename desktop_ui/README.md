@@ -42,20 +42,23 @@ npm run tauri dev
 推荐从仓库根目录使用统一脚本构建，自动处理后端 sidecar + 前端打包：
 
 ```powershell
-.\scripts\build_setup.ps1 -PythonExe ".venv/Scripts/python.exe"
+# 先确保 Rust cargo 在 PATH（否则可能报: failed to get cargo metadata: program not found）
+$env:Path = "C:\Users\Administrator\.cargo\bin;$env:Path"
+
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe"
 ```
 
 常用参数：
 
 ```powershell
 # 仅前端有改动时，跳过后端重打包
-.\scripts\build_setup.ps1 -PythonExe ".venv/Scripts/python.exe" -SkipBackend
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe" -SkipBackend
 
 # 切换后端打包模式（默认 onefile）
-.\scripts\build_setup.ps1 -PythonExe ".venv/Scripts/python.exe" -BackendMode onedir
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe" -BackendMode onedir
 
 # 启用可选 TLS 后端（体积会变大）
-.\scripts\build_setup.ps1 -PythonExe ".venv/Scripts/python.exe" -IncludeOptionalTlsBackends
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe" -IncludeOptionalTlsBackends
 ```
 
 MSI 产物路径：

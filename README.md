@@ -150,11 +150,14 @@ python desktop_backend.py --host 127.0.0.1 --port 8765 --interaction web
 ### 5.2 仅构建 MSI
 
 ```powershell
-# 推荐：在仓库根目录触发，统一走脚本
-./scripts/build_setup.ps1 -PythonExe .venv/Scripts/python.exe
+# 先确保 Rust cargo 在 PATH（否则可能报: failed to get cargo metadata: program not found）
+$env:Path = "C:\Users\Administrator\.cargo\bin;$env:Path"
+
+# 推荐：在仓库根目录触发，统一走脚本（后端 + 前端 + MSI）
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe"
 
 # 若仅前端改动，跳过后端重打包
-./scripts/build_setup.ps1 -PythonExe .venv/Scripts/python.exe -SkipBackend
+.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe" -SkipBackend
 
 # 仅触发 Tauri msi（需确保 sidecar 已是最新）
 cd desktop_ui
