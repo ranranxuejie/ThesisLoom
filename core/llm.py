@@ -85,10 +85,10 @@ def _should_print_full_llm_output() -> bool:
     return value in {"1", "true", "yes", "y", "on"}
 
 
-def _load_llm_runtime_config_from_inputs() -> tuple[str, str, str]:
+def _load_llm_runtime_config_from_inputs() -> tuple[str, str, str, str]:
     inputs_path = resolve_inputs_path()
     if not os.path.exists(inputs_path):
-        return "", "", ""
+        return "", "", "", ""
 
     try:
         with open(inputs_path, "r", encoding="utf-8-sig") as f:
@@ -97,9 +97,10 @@ def _load_llm_runtime_config_from_inputs() -> tuple[str, str, str]:
             str(data.get("base_url", "")).strip(),
             str(data.get("model_api_key", "")).strip(),
             str(data.get("ark_api_key", "")).strip(),
+            str(data.get("model_provider", "")).strip().lower(),
         )
     except Exception:
-        return "", "", ""
+        return "", "", "", ""
 
 
 def _extract_content_parts_from_chunk_obj(obj: Any) -> list[str]:
@@ -246,11 +247,18 @@ def call_llm(system_input: str,
              thinking: bool = True,
              max_completion_tokens: int = 2**15,
              request_timeout: tuple[float, float] = (20.0, 240.0)) -> Any:
-    cfg_base_url, cfg_model_api_key, cfg_ark_api_key = _load_llm_runtime_config_from_inputs()
+    cfg_base_url, cfg_model_api_key, cfg_ark_api_key, cfg_model_provider = _load_llm_runtime_config_from_inputs()
+
+    provider_raw = str(cfg_model_provider or "").strip().lower()
+    if provider_raw in {"base_url", "doubao", "openrouter"}:
+        provider = provider_raw
+    else:
+        # Backward compatibility: old configs without model_provider still auto-route doubao models.
+        provider = "doubao" if "doubao" in str(model).lower() else "base_url"
 
     # 用一个字典作为容器，用来在主线程和子线程之间传递结果或异常
     result_container = {}
-    if 'doubao' in model:
+    if provider == "doubao":
         api_key = os.getenv("ARK_API_KEY") or cfg_ark_api_key or cfg_model_api_key
         if not api_key:
             raise EnvironmentError("Please set ARK_API_KEY environment variable")
@@ -313,6 +321,8 @@ def call_llm(system_input: str,
 
     else:
         base_url = cfg_base_url or os.getenv("LOCAL_API_URL")
+        if (not base_url) and provider == "openrouter":
+            base_url = "https://openrouter.ai/api/v1"
         token = cfg_model_api_key or os.getenv("LOCAL_API_TOKEN")
         # --- 新增：调用你本地的 FastAPI 代理服务 ---
         if not base_url:
@@ -503,7 +513,8 @@ def call_llm(system_input: str,
                 )
                 result_container['error'] = str(e)
 
-        print(f"| | |[RUN] 发起BaseURL请求 (模型: {model})")
+        route_label = "OpenRouter" if provider == "openrouter" else "BaseURL"
+        print(f"| | |[RUN] 发起{route_label}请求 (模型: {model})")
         api_thread = threading.Thread(target=_proxy_call)
     # --- 共通逻辑：启动线程并渲染计时器 ---
     api_thread.start()

@@ -10,6 +10,7 @@ import {
   openProject,
   openProjectFolder,
   postAction,
+  rollbackSnapshot,
   saveInputFile,
   saveInputs,
   trashProject,
@@ -20,11 +21,13 @@ const API_BASE_URL = "http://127.0.0.1:8765";
 
 type PageKey = "projects" | "inputs" | "outputs" | "workflow";
 type OutputTab = "paper" | "pipeline";
+type ModelProvider = "base_url" | "doubao" | "openrouter";
 
 interface InputsFormState {
   topic: string;
   language: "English" | "Chinese";
   model: string;
+  model_provider: ModelProvider;
   max_review_rounds: number;
   paper_search_limit: number;
   openalex_api_key: string;
@@ -37,6 +40,7 @@ const DEFAULT_INPUTS_FORM: InputsFormState = {
   topic: "",
   language: "English",
   model: "gemini-3.1-pro",
+  model_provider: "base_url",
   max_review_rounds: 3,
   paper_search_limit: 30,
   openalex_api_key: "",
@@ -336,6 +340,7 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
     "topic",
     "language",
     "model",
+    "model_provider",
     "max_review_rounds",
     "paper_search_limit",
     "openalex_api_key",
@@ -354,11 +359,15 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
 
   const languageValue = String(parsed.language ?? DEFAULT_INPUTS_FORM.language).trim();
   const language: "English" | "Chinese" = languageValue === "Chinese" ? "Chinese" : "English";
+  const providerValue = String(parsed.model_provider ?? DEFAULT_INPUTS_FORM.model_provider).trim().toLowerCase();
+  const modelProvider: ModelProvider =
+    providerValue === "doubao" ? "doubao" : providerValue === "openrouter" ? "openrouter" : "base_url";
 
   const form: InputsFormState = {
     topic: String(parsed.topic ?? DEFAULT_INPUTS_FORM.topic),
     language,
     model: String(parsed.model ?? DEFAULT_INPUTS_FORM.model),
+    model_provider: modelProvider,
     max_review_rounds: toNumber(parsed.max_review_rounds, DEFAULT_INPUTS_FORM.max_review_rounds, 1, 20),
     paper_search_limit: toNumber(parsed.paper_search_limit, DEFAULT_INPUTS_FORM.paper_search_limit, 1, 300),
     openalex_api_key: String(parsed.openalex_api_key ?? DEFAULT_INPUTS_FORM.openalex_api_key),
@@ -376,6 +385,7 @@ function composeInputsPayload(form: InputsFormState, extra: Record<string, unkno
     topic: form.topic,
     language: form.language,
     model: form.model,
+    model_provider: form.model_provider,
     max_review_rounds: form.max_review_rounds,
     paper_search_limit: form.paper_search_limit,
     openalex_api_key: form.openalex_api_key,
@@ -400,6 +410,7 @@ function App() {
   const [editableFiles, setEditableFiles] = useState<string[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>("");
   const [selectedFileContent, setSelectedFileContent] = useState<string>("");
+  const lastSavedInputFileRef = useRef<{ path: string; content: string }>({ path: "", content: "" });
 
   const [projects, setProjects] = useState<string[]>([]);
   const [selectedProjectName, setSelectedProjectName] = useState<string>("");
@@ -422,6 +433,9 @@ function App() {
   const lastPendingActionRef = useRef<string>("");
 
   const [loadRequirements, setLoadRequirements] = useState(true);
+  const [autoConfirmActions, setAutoConfirmActions] = useState(false);
+  const autoConfirmBusyRef = useRef(false);
+  const lastAutoConfirmKeyRef = useRef("");
   const baseUrl = API_BASE_URL;
 
   const pushNotice = useCallback((kind: "info" | "ok" | "warn" | "error", text: string) => {
@@ -541,8 +555,10 @@ function App() {
           pushNotice("error", payload.message || "读取文件失败");
           return;
         }
+        const loadedContent = payload.content || "";
         setSelectedFilePath(path);
-        setSelectedFileContent(payload.content || "");
+        setSelectedFileContent(loadedContent);
+        lastSavedInputFileRef.current = { path, content: loadedContent };
       } catch (err) {
         pushNotice("error", `读取文件失败: ${String(err)}`);
       }
@@ -550,18 +566,31 @@ function App() {
     [baseUrl, pushNotice],
   );
 
-  const saveSelectedFile = useCallback(async () => {
+  const saveSelectedFile = useCallback(async (silent = false) => {
     if (!selectedFilePath) {
-      pushNotice("warn", "未选择输入文件");
+      if (!silent) {
+        pushNotice("warn", "未选择输入文件");
+      }
       return;
     }
+
+    if (silent) {
+      const lastSaved = lastSavedInputFileRef.current;
+      if (lastSaved.path === selectedFilePath && lastSaved.content === selectedFileContent) {
+        return;
+      }
+    }
+
     try {
       const payload = await saveInputFile(baseUrl, selectedFilePath, selectedFileContent);
       if (!payload.ok) {
         pushNotice("error", payload.message || "保存文件失败");
         return;
       }
-      pushNotice("ok", `已保存 ${selectedFilePath}`);
+      lastSavedInputFileRef.current = { path: selectedFilePath, content: selectedFileContent };
+      if (!silent) {
+        pushNotice("ok", `已保存 ${selectedFilePath}`);
+      }
     } catch (err) {
       pushNotice("error", `保存文件失败: ${String(err)}`);
     }
@@ -622,6 +651,36 @@ function App() {
         await refreshLogs();
       } catch (err) {
         pushNotice("error", `动作提交失败: ${String(err)}`);
+      }
+    },
+    [baseUrl, pushNotice, refreshLogs, refreshState],
+  );
+
+  const rollbackToVersion = useCallback(
+    async (statePath: string, label: string) => {
+      const normalizedPath = String(statePath || "").trim();
+      if (!normalizedPath) {
+        pushNotice("warn", "该快照缺少状态文件，无法回退");
+        return;
+      }
+
+      const confirmText = `确认回退到版本「${label || "未命名快照"}」吗？回退会覆盖当前 checkpoint 与正文输出。`;
+      if (!window.confirm(confirmText)) {
+        return;
+      }
+
+      try {
+        const result = await rollbackSnapshot(baseUrl, normalizedPath);
+        if (!result.ok) {
+          pushNotice("error", result.message || "版本回退失败");
+          return;
+        }
+
+        pushNotice("ok", result.message || "版本回退成功");
+        await refreshState();
+        await refreshLogs();
+      } catch (err) {
+        pushNotice("error", `版本回退失败: ${String(err)}`);
       }
     },
     [baseUrl, pushNotice, refreshLogs, refreshState],
@@ -873,6 +932,16 @@ function App() {
   const plannerOutputs = stateSnapshot?.planner_outputs || [];
   const overallPlans = stateSnapshot?.overall_review_plans || [];
   const majorReviewItems = stateSnapshot?.major_review_items || [];
+  const versionSnapshots = stateSnapshot?.version_snapshots || [];
+  const keyMilestones = stateSnapshot?.key_milestones || [];
+  const rewriteDoneSubIds = Array.isArray(stateSnapshot?.rewrite_done_sub_ids)
+    ? stateSnapshot?.rewrite_done_sub_ids || []
+    : [];
+  const rewriteDoneSet = new Set(
+    rewriteDoneSubIds
+      .map((x) => String(x || "").trim())
+      .filter((x) => Boolean(x)),
+  );
   const nextSteps = stateSnapshot?.next_steps_plan || [];
   const nextStepsUpdatedAt = stateSnapshot?.next_steps_updated_at || "";
   const flowMajorLabel = FLOW_STEPS.find((x) => x.key === flowKey)?.title || "";
@@ -902,7 +971,8 @@ function App() {
       const priority = String(record.priority || "medium").trim();
       const issues = record.issues;
       const issueCount = Array.isArray(issues) ? issues.length : 0;
-      const current = currentNode === "node_rewrite" && Boolean(currentSubId) && subId === currentSubId;
+      const done = rewriteDoneSet.has(subId);
+      const current = !done && currentNode === "node_rewrite" && Boolean(currentSubId) && subId === currentSubId;
       return {
         idx,
         subId,
@@ -910,6 +980,7 @@ function App() {
         itemType,
         priority,
         issueCount,
+        done,
         current,
       };
     })
@@ -920,6 +991,7 @@ function App() {
       itemType: string;
       priority: string;
       issueCount: number;
+      done: boolean;
       current: boolean;
     } => item !== null)
     .sort((a, b) => a.subId.localeCompare(b.subId, undefined, { numeric: true, sensitivity: "base" }));
@@ -966,6 +1038,88 @@ function App() {
     const toastText = msg ? `需要人工操作：${label}。${msg}` : `需要人工操作：${label}`;
     pushNotice("warn", toastText);
   }, [pushNotice, stateSnapshot?.pending_action, stateSnapshot?.pending_action_message]);
+
+  useEffect(() => {
+    if (!autoConfirmActions) {
+      autoConfirmBusyRef.current = false;
+      lastAutoConfirmKeyRef.current = "";
+      return;
+    }
+
+    const action = String(pendingAction || "").trim();
+    if (!action) {
+      autoConfirmBusyRef.current = false;
+      return;
+    }
+
+    const actionKey = `${action}|${stateSnapshot?.runtime_time || ""}|${stateSnapshot?.checkpoint_mtime || ""}`;
+    if (autoConfirmBusyRef.current || lastAutoConfirmKeyRef.current === actionKey) {
+      return;
+    }
+
+    lastAutoConfirmKeyRef.current = actionKey;
+
+    const runAutoAction = async () => {
+      autoConfirmBusyRef.current = true;
+      try {
+        if (action === "confirm_inputs_ready") {
+          const ok = await persistInputsForm(true);
+          if (!ok) {
+            pushNotice("error", "自动确认失败：inputs 保存失败");
+            return;
+          }
+          await sendAction({ action: "confirm_inputs_ready" });
+          return;
+        }
+
+        if (action === "set_enable_auto_title") {
+          await sendAction({ action: "set_enable_auto_title", value: true });
+          return;
+        }
+        if (action === "set_enable_search") {
+          await sendAction({ action: "set_enable_search", value: true });
+          return;
+        }
+        if (action === "confirm_related_works") {
+          await sendAction({ action: "confirm_related_works" });
+          return;
+        }
+        if (action === "enter_reviewing") {
+          await sendAction({
+            action: "enter_reviewing",
+            load_requirements: true,
+            requirements_path: "inputs/write_requests.md",
+            manual_revision_path: "inputs/revision_requests.md",
+          });
+          return;
+        }
+        if (action === "set_architecture_force_continue") {
+          await sendAction({ action: "set_architecture_force_continue", value: true });
+          return;
+        }
+        if (action === "retry_after_llm_failure") {
+          await sendAction({ action: "retry_after_llm_failure" });
+          return;
+        }
+        if (action === "confirm_next_review_round") {
+          await sendAction({ action: "confirm_next_review_round", continue: true });
+        }
+      } finally {
+        autoConfirmBusyRef.current = false;
+      }
+    };
+
+    pushNotice("info", `自动确认：${ACTION_LABELS[action] || action}`);
+    void runAutoAction();
+  }, [
+    autoConfirmActions,
+    pendingAction,
+    persistInputsForm,
+    pushNotice,
+    sendAction,
+    stateSnapshot?.checkpoint_mtime,
+    stateSnapshot?.runtime_time,
+  ]);
 
   const actionControl = (
     <div className="action-zone">
@@ -1221,6 +1375,30 @@ function App() {
               </label>
 
               <label className="field">
+                <span>模型供应商 *</span>
+                <select
+                  title="model_provider"
+                  value={inputsForm.model_provider}
+                  onChange={(e) => {
+                    const value = e.target.value === "doubao"
+                      ? "doubao"
+                      : e.target.value === "openrouter"
+                        ? "openrouter"
+                        : "base_url";
+                    updateForm("model_provider", value);
+                    if (value === "openrouter" && !String(inputsForm.base_url || "").trim()) {
+                      updateForm("base_url", "https://openrouter.ai/api/v1");
+                    }
+                  }}
+                >
+                  <option value="base_url">自定义 Base URL</option>
+                  <option value="doubao">豆包 Ark</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+                <small className="field-help">用于决定请求路由：自定义地址、豆包官方通道或 OpenRouter。</small>
+              </label>
+
+              <label className="field">
                 <span>最多审稿轮次 *</span>
                 <input
                   title="max_review_rounds"
@@ -1271,29 +1449,84 @@ function App() {
                   value={inputsForm.ark_api_key}
                   onChange={(e) => updateForm("ark_api_key", e.target.value)}
                 />
-                <small className="field-help">如果你使用豆包模型，请填写该密钥。</small>
+                <small className="field-help">
+                  {inputsForm.model_provider === "doubao"
+                    ? "当供应商为豆包时优先使用该密钥。"
+                    : "仅在供应商为豆包时使用该密钥。"}
+                </small>
               </label>
 
               <label className="field">
                 <span>模型服务地址（可选）</span>
                 <input
                   title="base_url"
-                  placeholder="例如 http://localhost:8000/v1"
+                  placeholder={
+                    inputsForm.model_provider === "doubao"
+                      ? "豆包供应商固定使用 Ark 官方地址，无需填写"
+                      : inputsForm.model_provider === "openrouter"
+                        ? "默认 https://openrouter.ai/api/v1"
+                        : "例如 http://localhost:8000/v1"
+                  }
                   value={inputsForm.base_url}
                   onChange={(e) => updateForm("base_url", e.target.value)}
+                  disabled={inputsForm.model_provider === "doubao"}
                 />
-                <small className="field-help">默认可留空；仅在你使用自建或代理模型服务时填写。</small>
+                <small className="field-help">
+                  {inputsForm.model_provider === "doubao"
+                    ? "豆包通道会自动使用 Ark 官方地址。"
+                    : inputsForm.model_provider === "openrouter"
+                      ? "可留空使用默认 OpenRouter 地址，也可改为你的兼容网关。"
+                      : "默认可留空；仅在你使用自建或代理模型服务时填写。"}
+                </small>
               </label>
 
               <label className="field">
-                <span>模型服务 API 密钥（可选）</span>
+                <span>
+                  {inputsForm.model_provider === "openrouter"
+                    ? "OpenRouter API 密钥（可选）"
+                    : inputsForm.model_provider === "doubao"
+                      ? "模型服务 API 密钥（可选，豆包兜底）"
+                      : "模型服务 API 密钥（可选）"}
+                  {inputsForm.model_provider === "openrouter" && (
+                    <a
+                      className="field-link"
+                      href="https://openrouter.ai/workspaces/default/keys"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      获取链接
+                    </a>
+                  )}
+                  {inputsForm.model_provider === "doubao" && (
+                    <a
+                      className="field-link"
+                      href="https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      获取链接
+                    </a>
+                  )}
+                </span>
                 <input
                   title="model_api_key"
-                  placeholder="可为空"
+                  placeholder={
+                    inputsForm.model_provider === "openrouter"
+                      ? "请输入 OpenRouter API Key"
+                      : inputsForm.model_provider === "doubao"
+                        ? "可为空（用作豆包 Ark Key 兜底）"
+                        : "可为空"
+                  }
                   value={inputsForm.model_api_key}
                   onChange={(e) => updateForm("model_api_key", e.target.value)}
                 />
-                <small className="field-help">与“模型服务地址”配套使用；若使用默认方式可留空。</small>
+                <small className="field-help">
+                  {inputsForm.model_provider === "openrouter"
+                    ? "OpenRouter 供应商建议填写对应 API Key。"
+                    : inputsForm.model_provider === "doubao"
+                      ? "可作为豆包 Ark 密钥兜底（优先使用上方 Ark API 密钥）。"
+                      : "与“模型服务地址”配套使用；若使用默认方式可留空。"}
+                </small>
               </label>
             </div>
 
@@ -1319,13 +1552,17 @@ function App() {
             <div className="line"><span>当前编辑内容:</span> {describeInputFile(selectedFilePath) || "-"}</div>
             <textarea
               title="selected input file editor"
+              className="input-file-textarea"
               placeholder="在这里编辑所选输入文件"
               value={selectedFileContent}
               onChange={(e) => setSelectedFileContent(e.target.value)}
+              onBlur={() => {
+                void saveSelectedFile(true);
+              }}
             />
             <div className="action-buttons">
               <button className="btn" onClick={() => loadSelectedFile(selectedFilePath)}>重新加载文件</button>
-              <button className="btn major" onClick={saveSelectedFile}>保存当前文件</button>
+              <button className="btn major" onClick={() => void saveSelectedFile(false)}>保存当前文件</button>
             </div>
           </section>
         )}
@@ -1396,6 +1633,14 @@ function App() {
               <h3>动作控制</h3>
               <div className="line"><span>待处理动作:</span> {ACTION_LABELS[pendingAction] || pendingAction || "无"}</div>
               <div className="line"><span>动作提示:</span> {stateSnapshot?.pending_action_message || "-"}</div>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={autoConfirmActions}
+                  onChange={(e) => setAutoConfirmActions(e.target.checked)}
+                />
+                自动确认待处理动作（默认继续流程）
+              </label>
               {actionControl}
             </section>
 
@@ -1456,18 +1701,27 @@ function App() {
                         {step.key === "rewrite_execution" && rewriteProgressItems.length > 0 && (
                           <div className="drafting-progress-inline">
                             <div className="drafting-progress-head">
-                              <strong>待改写小节</strong>
+                              <strong>改写小节进度</strong>
                               <small>{rewriteProgressItems.length} 项</small>
                             </div>
                             <div className="drafting-progress-list">
                               {rewriteProgressItems.map((item) => (
                                 <div
                                   key={`${item.subId}-${item.idx}`}
-                                  className={item.current ? "drafting-progress-item current" : "drafting-progress-item"}
+                                  className={
+                                    item.done
+                                      ? "drafting-progress-item done"
+                                      : item.current
+                                        ? "drafting-progress-item current"
+                                        : "drafting-progress-item"
+                                  }
                                 >
                                   <strong>{item.subId}</strong>
                                   <span>{item.title || (item.itemType === "chapter_header" ? "章节标题与总起句" : "正文小节改写")}</span>
-                                  <em>{item.current ? "进行中" : `${getReviewPriorityLabel(item.priority)} · 待执行`}{item.issueCount > 0 ? ` · 问题 ${item.issueCount} 条` : ""}</em>
+                                  <em>
+                                    {item.done ? "已完成" : item.current ? "进行中" : `${getReviewPriorityLabel(item.priority)} · 待执行`}
+                                    {item.issueCount > 0 ? ` · 问题 ${item.issueCount} 条` : ""}
+                                  </em>
                                 </div>
                               ))}
                             </div>
@@ -1483,6 +1737,62 @@ function App() {
               <div className="line"><span>审稿轮次:</span> {(stateSnapshot?.review_round ?? 0)} / {(stateSnapshot?.max_review_rounds ?? 0)}</div>
               <div className="line"><span>完成小节:</span> {stateSnapshot?.completed_section_count ?? 0} | 待改写 {stateSnapshot?.pending_rewrite_count ?? 0}</div>
 
+            </section>
+
+            <section className="panel-block">
+              <h3>关键节点与版本回退</h3>
+
+              {keyMilestones.length === 0 && (
+                <div className="empty-tip">暂无关键节点快照。完成初稿或审稿轮次后会自动出现。</div>
+              )}
+
+              {keyMilestones.length > 0 && (
+                <div className="drafting-progress-inline">
+                  <div className="drafting-progress-head">
+                    <strong>关键节点</strong>
+                    <small>{keyMilestones.length} 项</small>
+                  </div>
+                  <div className="drafting-progress-list">
+                    {keyMilestones.map((item, idx) => (
+                      <div key={`${item.tag || "milestone"}-${idx}`} className="drafting-progress-item done">
+                        <strong>{item.label || item.tag || "关键节点"}</strong>
+                        <span>{item.time || "-"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="drafting-progress-inline">
+                <div className="drafting-progress-head">
+                  <strong>版本快照</strong>
+                  <small>{versionSnapshots.length} 项</small>
+                </div>
+                <div className="drafting-progress-list">
+                  {versionSnapshots.length === 0 && (
+                    <div className="drafting-progress-item">
+                      <span>暂无可回退快照。</span>
+                    </div>
+                  )}
+
+                  {versionSnapshots.map((snap, idx) => (
+                    <div key={`${snap.tag || "snapshot"}-${idx}`} className={snap.is_key_node ? "drafting-progress-item current" : "drafting-progress-item"}>
+                      <strong>{snap.label || snap.tag || "snapshot"}</strong>
+                      <span>{snap.saved_at || "-"}</span>
+                      <em>{snap.key_label || "普通快照"}</em>
+                      <div className="action-buttons">
+                        <button
+                          className="btn"
+                          disabled={!snap.state_path}
+                          onClick={() => void rollbackToVersion(String(snap.state_path || ""), String(snap.label || snap.tag || "snapshot"))}
+                        >
+                          回退到此版本
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </section>
 
             <section className="panel-block logs-panel">

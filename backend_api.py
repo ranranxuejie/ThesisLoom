@@ -2,6 +2,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -10,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from core.state import resolve_inputs_path, build_output_paths, find_latest_checkpoint_for_resume
+from core.state import resolve_inputs_path, build_output_paths, find_latest_checkpoint_for_resume, output_path_from_checkpoint
 from core.project_paths import (
   project_path,
   absolute_path_in_project,
@@ -258,6 +259,196 @@ def _count_mixed_words(text: str) -> int:
     return len(en_tokens) + len(zh_chars)
 
 
+def _is_subpath(path: str, root: str) -> bool:
+  try:
+    p = Path(path).resolve()
+    r = Path(root).resolve()
+    return p == r or str(p).startswith(str(r) + os.sep)
+  except Exception:
+    return False
+
+
+def _snapshot_key_label(tag: str) -> str:
+  raw = str(tag or "").strip().lower()
+  if raw == "draft_initial":
+    return "初稿完成"
+
+  m_rewrite = re.match(r"^rewrite_round_(\d+)$", raw)
+  if m_rewrite:
+    return f"第 {m_rewrite.group(1)} 轮审稿重写完成"
+
+  m_final = re.match(r"^final_round_(\d+)$", raw)
+  if m_final:
+    return f"第 {m_final.group(1)} 轮审稿通过（终稿）"
+
+  m_no_rewrite = re.match(r"^review_round_(\d+)_no_rewrite$", raw)
+  if m_no_rewrite:
+    return f"第 {m_no_rewrite.group(1)} 轮审稿结束（无重写）"
+
+  return ""
+
+
+def _list_version_snapshots(output_path: str) -> tuple[list[dict], list[dict]]:
+  snapshots_dir = project_path("completed_history", "snapshots")
+  if (not output_path) or (not os.path.exists(snapshots_dir)):
+    return [], []
+
+  stem, _ = os.path.splitext(os.path.basename(output_path))
+  if not stem:
+    return [], []
+
+  pattern = os.path.join(snapshots_dir, f"{stem}__*.md")
+  rows: list[dict] = []
+  for md_path in glob.glob(pattern):
+    filename = os.path.basename(md_path)
+    if (not filename.startswith(f"{stem}__")) or (not filename.endswith(".md")):
+      continue
+
+    tag = filename[len(stem) + 2 : -3]
+    if not tag:
+      continue
+
+    state_path = os.path.join(snapshots_dir, f"{stem}__{tag}__state.json")
+    state_exists = os.path.exists(state_path)
+
+    saved_at_ts = float(os.path.getmtime(md_path))
+    if state_exists:
+      saved_at_ts = max(saved_at_ts, float(os.path.getmtime(state_path)))
+
+    key_label = _snapshot_key_label(tag)
+    rows.append(
+      {
+        "tag": tag,
+        "md_path": md_path,
+        "state_path": state_path if state_exists else "",
+        "saved_at_ts": saved_at_ts,
+        "saved_at": datetime.fromtimestamp(saved_at_ts).strftime("%Y-%m-%d %H:%M:%S"),
+        "key_label": key_label,
+      }
+    )
+
+  rows.sort(key=lambda x: float(x.get("saved_at_ts", 0.0)), reverse=True)
+
+  snapshots: list[dict] = []
+  for row in rows:
+    tag = str(row.get("tag", ""))
+    key_label = str(row.get("key_label", ""))
+    snapshots.append(
+      {
+        "tag": tag,
+        "label": key_label or tag.replace("_", " "),
+        "saved_at": str(row.get("saved_at", "")),
+        "markdown_path": relative_to_project(str(row.get("md_path", ""))),
+        "state_path": relative_to_project(str(row.get("state_path", ""))) if row.get("state_path", "") else "",
+        "is_key_node": bool(key_label),
+        "key_label": key_label,
+      }
+    )
+
+  milestone_rows = [x for x in rows if str(x.get("key_label", "")).strip()]
+  milestone_rows.sort(key=lambda x: float(x.get("saved_at_ts", 0.0)))
+  milestones: list[dict] = []
+  for row in milestone_rows:
+    milestones.append(
+      {
+        "tag": str(row.get("tag", "")),
+        "label": str(row.get("key_label", "")),
+        "time": str(row.get("saved_at", "")),
+        "state_path": relative_to_project(str(row.get("state_path", ""))) if row.get("state_path", "") else "",
+      }
+    )
+
+  return snapshots, milestones
+
+
+def _rollback_to_snapshot_state(state_path: str) -> dict:
+  runtime_status = str(_read_runtime_snapshot().get("runtime_status", "unknown")).strip().lower()
+  if runtime_status in {"running", "starting"}:
+    return {"ok": False, "message": "workflow 正在运行，请先暂停或等待当前节点结束后再回退。"}
+
+  rel_state_path = str(state_path or "").strip()
+  if not _is_safe_rel_path(rel_state_path):
+    return {"ok": False, "message": "state_path 非法，必须是项目内相对路径。"}
+
+  abs_state_path = absolute_path_in_project(rel_state_path)
+  snapshots_root = project_path("completed_history", "snapshots")
+  if (not _is_subpath(abs_state_path, snapshots_root)) or (not abs_state_path.endswith("__state.json")):
+    return {"ok": False, "message": "仅允许回退到 completed_history/snapshots 下的状态快照。"}
+
+  if not os.path.exists(abs_state_path):
+    return {"ok": False, "message": "指定的状态快照不存在。"}
+
+  try:
+    with open(abs_state_path, "r", encoding="utf-8-sig") as f:
+      snapshot_data = json.load(f)
+  except Exception as e:
+    return {"ok": False, "message": f"读取状态快照失败: {e}"}
+
+  if not isinstance(snapshot_data, dict):
+    return {"ok": False, "message": "状态快照格式错误，必须为 JSON 对象。"}
+
+  checkpoint_path = str(snapshot_data.get("runtime_checkpoint_path", "")).strip()
+  if checkpoint_path and _is_safe_rel_path(checkpoint_path):
+    checkpoint_path = absolute_path_in_project(checkpoint_path)
+  elif checkpoint_path and os.path.isabs(checkpoint_path):
+    if not _is_subpath(checkpoint_path, str(get_active_project_root())):
+      return {"ok": False, "message": "快照中的 checkpoint 路径不在当前项目内。"}
+  else:
+    checkpoint_path = ""
+
+  if not checkpoint_path:
+    checkpoint_path = _latest_checkpoint_path()
+
+  if not checkpoint_path:
+    fallback_topic, fallback_model, fallback_language = _read_fallback_inputs()
+    _ = fallback_language
+    _, checkpoint_path = build_output_paths(fallback_model, fallback_topic, "en")
+
+  if not checkpoint_path:
+    return {"ok": False, "message": "无法确定回退目标 checkpoint 路径。"}
+
+  try:
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    with open(checkpoint_path, "w", encoding="utf-8") as f:
+      json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
+  except Exception as e:
+    return {"ok": False, "message": f"写入 checkpoint 失败: {e}"}
+
+  md_snapshot_path = abs_state_path[: -len("__state.json")] + ".md"
+  output_path = output_path_from_checkpoint(checkpoint_path)
+  markdown_restored = False
+  try:
+    if output_path and os.path.exists(md_snapshot_path):
+      os.makedirs(os.path.dirname(output_path), exist_ok=True)
+      shutil.copyfile(md_snapshot_path, output_path)
+      markdown_restored = True
+  except Exception:
+    markdown_restored = False
+
+  try:
+    if os.path.exists(_action_file()):
+      os.remove(_action_file())
+  except Exception:
+    pass
+
+  snapshot_name = os.path.basename(md_snapshot_path if os.path.exists(md_snapshot_path) else abs_state_path)
+  _write_runtime_status(
+    "paused",
+    f"已回退到快照: {snapshot_name}",
+    pending_action="",
+    pending_action_message="",
+    interaction_mode="web",
+  )
+
+  return {
+    "ok": True,
+    "message": f"已回退到快照: {snapshot_name}",
+    "checkpoint_path": checkpoint_path,
+    "output_path": output_path,
+    "markdown_restored": markdown_restored,
+  }
+
+
 def _is_safe_rel_path(path: str) -> bool:
     p = str(path or "").strip().replace("\\", "/")
     if not p:
@@ -275,11 +466,70 @@ def _is_allowed_editable_input_file(path: str) -> bool:
   return abs_p in {str(Path(x).resolve()) for x in get_editable_input_files()}
 
 
+def _collect_action_targets(action_name: str) -> list[str]:
+  targets: set[str] = set()
+
+  try:
+    targets.add(str(Path(_action_file()).resolve()))
+  except Exception:
+    pass
+
+  try:
+    active_root = Path(get_active_project_root())
+    targets.add(str((active_root / "completed_history" / "workflow_actions.json").resolve()))
+  except Exception:
+    pass
+
+  if not action_name:
+    return sorted(targets)
+
+  for project_name in list_available_projects():
+    root = get_project_root_by_name(project_name)
+    if root is None:
+      continue
+
+    runtime_file = root / "completed_history" / "workflow_runtime.json"
+    if not runtime_file.exists():
+      continue
+
+    try:
+      with open(runtime_file, "r", encoding="utf-8-sig") as f:
+        runtime_payload = json.load(f)
+    except Exception:
+      continue
+
+    if not isinstance(runtime_payload, dict):
+      continue
+
+    status = str(runtime_payload.get("status", "")).strip().lower()
+    pending_action = str(runtime_payload.get("pending_action", "")).strip()
+    if status == "waiting_action" and pending_action == action_name:
+      targets.add(str((root / "completed_history" / "workflow_actions.json").resolve()))
+
+  return sorted(targets)
+
+
 def _write_action(payload: dict) -> None:
-  action_file = _action_file()
-  os.makedirs(os.path.dirname(action_file), exist_ok=True)
-  with open(action_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+  action_name = str((payload or {}).get("action", "")).strip()
+  targets = _collect_action_targets(action_name)
+  if not targets:
+    targets = [str(Path(_action_file()).resolve())]
+
+  text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+  success = 0
+  last_error: Exception | None = None
+
+  for action_file in targets:
+    try:
+      os.makedirs(os.path.dirname(action_file), exist_ok=True)
+      with open(action_file, "w", encoding="utf-8") as f:
+        f.write(text)
+      success += 1
+    except Exception as e:
+      last_error = e
+
+  if success == 0 and last_error is not None:
+    raise RuntimeError(f"动作写入失败: {last_error}")
 
 
 def list_available_projects() -> list[str]:
@@ -545,6 +795,7 @@ def _read_state_snapshot() -> dict:
         checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
 
     if not checkpoint:
+      fallback_output, _ = build_output_paths(fallback_model, fallback_topic, "en")
         return {
             "ok": True,
             "has_checkpoint": False,
@@ -560,6 +811,9 @@ def _read_state_snapshot() -> dict:
             "workflow_phase": "idle",
             "pending_action": runtime_pending_action,
             "pending_action_message": runtime_pending_action_message,
+            "output_path": fallback_output,
+            "version_snapshots": [],
+            "key_milestones": [],
             "next_steps_plan": [],
             "next_steps_updated_at": "",
             "paper_outputs": [],
@@ -580,10 +834,21 @@ def _read_state_snapshot() -> dict:
             "checkpoint_path": checkpoint,
             "message": f"读取 checkpoint 失败: {e}",
             "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+          "version_snapshots": [],
+          "key_milestones": [],
             "project_name": project_name,
             "project_root": project_root,
             **runtime,
         }
+
+      output_path = output_path_from_checkpoint(checkpoint)
+      if not output_path:
+        output_path, _ = build_output_paths(
+          str(data.get("model", fallback_model)),
+          str(data.get("topic", fallback_topic)),
+          "en",
+        )
+      version_snapshots, key_milestones = _list_version_snapshots(output_path)
 
     completed_sections_raw = data.get("completed_sections", []) or []
     if isinstance(completed_sections_raw, dict):
@@ -600,6 +865,18 @@ def _read_state_snapshot() -> dict:
         reviewed_sections = [x for x in reviewed_sections_raw if isinstance(x, dict)]
     else:
         reviewed_sections = []
+
+    rewrite_done_raw = data.get("rewrite_done_sub_ids", []) or []
+    if isinstance(rewrite_done_raw, list):
+      rewrite_done_sub_ids = [str(x).strip() for x in rewrite_done_raw if str(x).strip()]
+    else:
+      rewrite_done_sub_ids = []
+    rewrite_done_set = set(rewrite_done_sub_ids)
+    pending_rewrite_count = sum(
+      1
+      for item in reviewed_sections
+      if str((item or {}).get("sub_chapter_id", "")).strip() not in rewrite_done_set
+    )
 
     outline = _coerce_outline_list(data)
     major_count = len(outline)
@@ -683,6 +960,7 @@ def _read_state_snapshot() -> dict:
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "checkpoint_path": checkpoint,
         "checkpoint_mtime": datetime.fromtimestamp(os.path.getmtime(checkpoint)).strftime("%Y-%m-%d %H:%M:%S"),
+        "output_path": output_path,
         "topic": str(data.get("topic", "")),
         "model": str(data.get("model", "")),
         "language": str(data.get("language", "")),
@@ -704,7 +982,7 @@ def _read_state_snapshot() -> dict:
         "pre_done_research_gaps": bool(data.get("pre_done_research_gaps", False)),
         "major_chapter_count": major_count,
         "completed_section_count": len(completed_sections),
-        "pending_rewrite_count": len(reviewed_sections),
+        "pending_rewrite_count": pending_rewrite_count,
         "paper_search_limit": _safe_int(data.get("paper_search_limit", 0), 0),
         "search_query_count": len(search_queries),
         "search_queries": search_queries,
@@ -718,6 +996,8 @@ def _read_state_snapshot() -> dict:
         "manual_revision_path": str(data.get("manual_revision_path", "inputs/revision_requests.md")),
         "pending_action": pending_action,
         "pending_action_message": pending_action_message,
+        "version_snapshots": version_snapshots,
+        "key_milestones": key_milestones,
         "next_steps_plan": next_steps_plan,
         "next_steps_updated_at": str(data.get("next_steps_updated_at", "")),
         "auto_apply_saved_actions": bool(data.get("auto_apply_saved_actions", True)),
@@ -732,6 +1012,7 @@ def _read_state_snapshot() -> dict:
         "overall_review_summary": str(data.get("review_summary", "")),
         "overall_review_plans": data.get("major_review_plans", []) if isinstance(data.get("major_review_plans", []), list) else [],
         "major_review_items": reviewed_sections,
+        "rewrite_done_sub_ids": rewrite_done_sub_ids,
         "related_works_path": str(data.get("related_works_path", "inputs/related_works.md")),
         "research_gap_output_path": str(data.get("research_gap_output_path", "inputs/research_gaps.md")),
         "workflow_metrics": metrics,
@@ -1533,6 +1814,31 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         return
 
+      if parsed.path == "/api/snapshot/rollback":
+        try:
+          length = int(self.headers.get("Content-Length", "0"))
+          raw = self.rfile.read(length) if length > 0 else b"{}"
+          payload = json.loads(raw.decode("utf-8"))
+          state_path = str(payload.get("state_path", "")).strip()
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": f"请求体解析失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        result = _rollback_to_snapshot_state(state_path)
+        code = 200 if result.get("ok") else 400
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
       if parsed.path == "/api/inputs":
         try:
           length = int(self.headers.get("Content-Length", "0"))
@@ -1664,7 +1970,17 @@ class Handler(BaseHTTPRequestHandler):
           self.wfile.write(body)
           return
 
-      _write_action(payload)
+      try:
+        _write_action(payload)
+      except Exception as e:
+        body = json.dumps({"ok": False, "message": f"动作写入失败: {e}"}, ensure_ascii=False).encode("utf-8")
+        self.send_response(500)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
       body = json.dumps({"ok": True, "message": "动作已写入"}, ensure_ascii=False).encode("utf-8")
       self.send_response(200)
       self.send_header("Content-Type", "application/json; charset=utf-8")

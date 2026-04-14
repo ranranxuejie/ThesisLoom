@@ -954,7 +954,10 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
     auto_resume = True
     if auto_resume:
         if force_resume:
-            selected_checkpoint = _latest_project_checkpoint_path() or checkpoint_path
+            # Resume from current project checkpoint first to avoid jumping to stale historical files.
+            selected_checkpoint = checkpoint_path
+            if not os.path.exists(selected_checkpoint):
+                selected_checkpoint = _latest_project_checkpoint_path() or checkpoint_path
         else:
             selected_checkpoint = _select_best_resume_checkpoint(
                 default_checkpoint=checkpoint_path,
@@ -1477,6 +1480,8 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
         if not hasattr(state, "rewrite_done_sub_ids"):
             state.rewrite_done_sub_ids = []
         for _ in range(state.max_review_rounds):
+            # Reset rewrite-progress markers only when a new review round begins.
+            state.rewrite_done_sub_ids = []
             _check_stop(stop_event)
             state.manual_revision_notes = _read_text(state.manual_revision_path)
             _checkpoint(state, checkpoint_path, reason="before_overall_review", node="node_overall_review")
@@ -1548,7 +1553,6 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
                 _append_event("key", f"重写完成: {sub_id}", node="node_rewrite")
 
             round_snapshot = save_versioned_snapshot(state, output_path, f"rewrite_round_{state.review_round}")
-            state.rewrite_done_sub_ids = []
             _checkpoint(state, checkpoint_path, reason="rewrite_round_snapshot_saved", node="reviewing")
             print(f"| 改稿快照已保存: {round_snapshot}")
             print("| 所有章节重写完成")

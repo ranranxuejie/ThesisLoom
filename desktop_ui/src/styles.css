@@ -1112,6 +1112,10 @@ footer.notice.error {
   min-height: 190px;
 }
 
+.input-file-textarea {
+  min-height: 340px;
+}
+
 .checkbox-field {
   align-items: center;
   grid-template-columns: 18px 1fr;

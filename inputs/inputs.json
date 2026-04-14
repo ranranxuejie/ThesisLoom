@@ -1,13 +1,12 @@
 ﻿{
-    "topic":  "",
-    "language":  "English",
-    "model":  "doubao-seed-2-0-pro-260215",
-    "max_review_rounds":  3,
-    "paper_search_limit":  30,
-    "openalex_api_key":  "",
-    "ark_api_key":  "",
-    "base_url":  "",
-    "model_api_key":  "",
-    "manual_revision_path":  "inputs/revision_requests.md",
-    "auto_resume":  false
+  "topic": "Physics-Informed State Projection: A Trajectory-Based Spatiotemporal Kernel Method for Scalable Traffic Forecasting",
+  "language": "English",
+  "model": "doubao-seed-2-0-pro-260215",
+  "max_review_rounds": 3,
+  "paper_search_limit": 200,
+  "openalex_api_key": "eg2wKcU07gdO6c31i2oT7m",
+  "ark_api_key": "741ebdb0-fb9e-432e-b1c4-bcb37d75ba86",
+  "base_url": "https://acai-proxy-api.onrender.com/v1",
+  "model_api_key": "",
+  "auto_resume": false
 }

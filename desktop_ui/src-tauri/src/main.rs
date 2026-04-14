@@ -18,6 +18,7 @@ struct BackendState {
     last_error: Mutex<Option<String>>,
     last_backend_command: Mutex<Option<String>>,
     last_workspace_root: Mutex<Option<String>>,
+    sidecar_hint: Mutex<Option<String>>,
 }
 
 impl Drop for BackendState {
@@ -270,6 +271,11 @@ fn start_backend_internal(
     let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = port.unwrap_or(8765);
     let fallback_workspace_root = workspace_display(workspace.clone());
+    let sidecar_hint = backend_state
+        .sidecar_hint
+        .lock()
+        .ok()
+        .and_then(|x| x.clone());
 
     let mut child_guard = backend_state
         .child
@@ -304,7 +310,15 @@ fn start_backend_internal(
 
     let mut errors: Vec<String> = Vec::new();
 
+    let mut backend_exe_candidates: Vec<String> = Vec::new();
+    if let Some(candidate) = sidecar_hint {
+        push_candidate(&mut backend_exe_candidates, candidate);
+    }
     for candidate in collect_backend_exe_candidates(workspace.as_deref()) {
+        push_candidate(&mut backend_exe_candidates, candidate);
+    }
+
+    for candidate in backend_exe_candidates {
         match try_start_with_backend_exe(&candidate, &host, port) {
             Ok(child) => {
                 let pid = child.id();
@@ -422,6 +436,12 @@ fn stop_child_process(child_slot: &mut Option<Child>) -> Option<u32> {
         Some(pid)
     } else {
         None
+    }
+}
+
+fn stop_backend_child(state: &BackendState) {
+    if let Ok(mut guard) = state.child.lock() {
+        let _ = stop_child_process(&mut guard);
     }
 }
 
@@ -553,6 +573,22 @@ fn main() {
         .manage(BackendState::default())
         .setup(|app| {
             let state = app.state::<BackendState>();
+
+            let sidecar_name = if cfg!(target_os = "windows") {
+                "ThesisLoomBackend-x86_64-pc-windows-msvc.exe"
+            } else {
+                "ThesisLoomBackend"
+            };
+
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let bundled_sidecar = resource_dir.join(sidecar_name);
+                if bundled_sidecar.exists() {
+                    if let Ok(mut hint) = state.sidecar_hint.lock() {
+                        *hint = Some(bundled_sidecar.display().to_string());
+                    }
+                }
+            }
+
             if let Err(err) = start_backend_internal(
                 &state,
                 Some("127.0.0.1".to_string()),
@@ -563,6 +599,12 @@ fn main() {
                 eprintln!("[auto-start] backend start failed: {err}");
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let state = window.state::<BackendState>();
+                stop_backend_child(&state);
+            }
         })
         .invoke_handler(tauri::generate_handler![backend_status, start_backend, stop_backend])
         .run(tauri::generate_context!())

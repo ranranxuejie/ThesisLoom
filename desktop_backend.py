@@ -1,8 +1,21 @@
 import argparse
 import threading
+import time
 
 from backend_api import start_web_server
 from workflow import _run_workflow_safely
+
+
+def _run_workflow_with_restart(stop_event: threading.Event, interaction_mode: str) -> None:
+    while not stop_event.is_set():
+        try:
+            _run_workflow_safely(stop_event=stop_event, interaction_mode=interaction_mode)
+            return
+        except Exception as e:
+            print(f"| [WARN] workflow runner exited unexpectedly, restarting in 1s: {e}")
+            if stop_event.is_set():
+                return
+            time.sleep(1.0)
 
 
 def main() -> None:
@@ -19,7 +32,7 @@ def main() -> None:
 
     stop_event = threading.Event()
     workflow_thread = threading.Thread(
-        target=_run_workflow_safely,
+        target=_run_workflow_with_restart,
         kwargs={"stop_event": stop_event, "interaction_mode": args.interaction},
         name="workflow-runner",
         daemon=True,
@@ -50,5 +63,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

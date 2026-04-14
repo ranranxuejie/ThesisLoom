@@ -39,6 +39,7 @@ export interface WorkflowStateSnapshot {
   total_words?: number;
   checkpoint_path?: string;
   checkpoint_mtime?: string;
+  output_path?: string;
   last_checkpoint_reason?: string;
   related_works_path?: string;
   research_gap_output_path?: string;
@@ -61,6 +62,22 @@ export interface WorkflowStateSnapshot {
   overall_review_summary?: string;
   overall_review_plans?: Array<Record<string, unknown>>;
   major_review_items?: Array<Record<string, unknown>>;
+  rewrite_done_sub_ids?: string[];
+  version_snapshots?: Array<{
+    tag?: string;
+    label?: string;
+    saved_at?: string;
+    markdown_path?: string;
+    state_path?: string;
+    is_key_node?: boolean;
+    key_label?: string;
+  }>;
+  key_milestones?: Array<{
+    tag?: string;
+    label?: string;
+    time?: string;
+    state_path?: string;
+  }>;
   token_usage?: {
     total_input_tokens?: number;
     total_output_tokens?: number;

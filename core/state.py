@@ -183,6 +183,15 @@ def save_versioned_snapshot(state: "PaperWriterState", output_path: str, tag: st
     with open(snapshot_path, "w", encoding="utf-8") as dst:
         dst.write(content)
 
+    state_snapshot_path = os.path.join(snapshots_dir, f"{stem}__{safe_tag}__state.json")
+    try:
+        snapshot_state = state.export_checkpoint()
+        snapshot_state = json.loads(json.dumps(snapshot_state, ensure_ascii=False))
+    except Exception:
+        snapshot_state = dict(state.export_checkpoint())
+    with open(state_snapshot_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot_state, f, ensure_ascii=False, indent=2)
+
     return snapshot_path
 
 

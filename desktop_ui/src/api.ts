@@ -95,3 +95,10 @@ export async function openProjectFolder(baseUrl: string, projectName: string): P
     body: JSON.stringify({ project_name: projectName }),
   });
 }
+
+export async function rollbackSnapshot(baseUrl: string, statePath: string): Promise<ActionResult> {
+  return requestJson<ActionResult>(`${baseUrl}/api/snapshot/rollback`, {
+    method: "POST",
+    body: JSON.stringify({ state_path: statePath }),
+  });
+}
