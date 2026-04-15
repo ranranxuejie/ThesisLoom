@@ -2,7 +2,6 @@
     "topic":  "",
     "language":  "English",
     "model":  "doubao-seed-2-0-pro-260215",
-    "max_review_rounds":  3,
     "paper_search_limit":  30,
     "openalex_api_key":  "",
     "ark_api_key":  "",

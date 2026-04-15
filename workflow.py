@@ -10,6 +10,7 @@ from core.state import (
     save_versioned_snapshot,
     save_state_checkpoint,
     load_state_checkpoint,
+    MAX_REVIEW_ROUNDS_SAFETY_LIMIT,
 )
 from core.nodes import (
     node_title_builder,
@@ -41,6 +42,10 @@ def _action_file() -> str:
     return project_path("completed_history", "workflow_actions.json")
 
 
+def _control_file() -> str:
+    return project_path("completed_history", "workflow_control.json")
+
+
 def _runtime_file() -> str:
     return project_path("completed_history", "workflow_runtime.json")
 
@@ -55,6 +60,16 @@ def _metrics_file() -> str:
 
 class WorkflowStopRequested(Exception):
     pass
+
+
+class WorkflowResumeFromCheckpoint(Exception):
+    pass
+
+
+_CONTROL_ACTION_PAUSE = "pause_workflow"
+_CONTROL_ACTION_RESUME = "resume_workflow"
+_CURRENT_INTERACTION_MODE = "web"
+_CURRENT_STOP_EVENT: Optional[Event] = None
 
 
 def _read_metrics() -> Dict[str, Any]:
@@ -137,6 +152,7 @@ def _record_step_metric(step: str, node: str, duration_seconds: float, status: s
 
 
 def _timed_call(step: str, metric_node: str, phase: str, fn, *args, **kwargs):
+    _check_stop(None, interaction_mode=_CURRENT_INTERACTION_MODE, node=metric_node, phase=phase)
     started = time.perf_counter()
     status = "ok"
     try:
@@ -148,6 +164,7 @@ def _timed_call(step: str, metric_node: str, phase: str, fn, *args, **kwargs):
         elapsed = time.perf_counter() - started
         _record_step_metric(step=step, node=metric_node, duration_seconds=elapsed, status=status, phase=phase)
         _append_event("detail", f"metric: {step} {elapsed:.3f}s", node=metric_node, phase=phase, status=status)
+        _check_stop(None, interaction_mode=_CURRENT_INTERACTION_MODE, node=metric_node, phase=phase)
 
 
 def _write_runtime_status(status: str, message: str = "", **extra: Any) -> None:
@@ -176,9 +193,217 @@ def _append_event(level: str, message: str, **extra: Any) -> None:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def _check_stop(stop_event: Optional[Event]) -> None:
-    if stop_event is not None and stop_event.is_set():
+def _read_runtime_payload() -> Dict[str, Any]:
+    runtime_file = _runtime_file()
+    if not os.path.exists(runtime_file):
+        return {}
+    try:
+        with open(runtime_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _consume_control_action(expected_action: str = "") -> Dict[str, Any] | None:
+    control_file = _control_file()
+    if not os.path.exists(control_file):
+        return None
+
+    try:
+        with open(control_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    action_name = str(payload.get("action", "")).strip()
+    if not action_name:
+        try:
+            os.remove(control_file)
+        except Exception:
+            pass
+        return None
+
+    expected = str(expected_action or "").strip()
+    if expected and action_name != expected:
+        return None
+
+    try:
+        os.remove(control_file)
+    except Exception:
+        pass
+    return payload
+
+
+def _wait_if_paused(
+    stop_event: Optional[Event],
+    interaction_mode: str = "",
+    node: str = "",
+    phase: str = "",
+) -> None:
+    mode = str(interaction_mode or _CURRENT_INTERACTION_MODE or "web").strip().lower()
+    if mode not in {"web", "cli"}:
+        mode = "web"
+
+    command = _consume_control_action()
+    if command is None:
+        return
+
+    command_action = str(command.get("action", "")).strip()
+    if command_action != _CONTROL_ACTION_PAUSE:
+        _append_event(
+            "detail",
+            f"忽略控制指令: {command_action}",
+            interaction_mode=mode,
+            node=node,
+            phase=phase,
+        )
+        return
+
+    runtime_status = str(_read_runtime_payload().get("status", "")).strip().lower()
+    if runtime_status in {"waiting_action", "done", "stopped", "failed"}:
+        _append_event(
+            "detail",
+            f"忽略暂停指令: runtime_status={runtime_status or 'unknown'}",
+            interaction_mode=mode,
+            node=node,
+            phase=phase,
+        )
+        return
+
+    _write_runtime_status(
+        "paused",
+        "流程已暂停，等待继续执行。",
+        interaction_mode=mode,
+        node=node,
+        phase=phase,
+        pending_action="",
+        pending_action_message="",
+    )
+    _append_event("key", "收到暂停指令，流程已暂停", interaction_mode=mode, node=node, phase=phase)
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise WorkflowStopRequested("workflow stop requested")
+
+        next_command = _consume_control_action()
+        if next_command is not None:
+            next_action = str(next_command.get("action", "")).strip()
+            if next_action == _CONTROL_ACTION_RESUME:
+                _write_runtime_status(
+                    "running",
+                    "收到继续指令，将从 checkpoint 续跑。",
+                    interaction_mode=mode,
+                    node=node,
+                    phase=phase,
+                )
+                _append_event("key", "收到继续指令，将从 checkpoint 续跑", interaction_mode=mode, node=node, phase=phase)
+                raise WorkflowResumeFromCheckpoint("workflow resume from checkpoint requested")
+            if next_action == _CONTROL_ACTION_PAUSE:
+                _append_event("detail", "重复暂停指令已忽略（流程保持暂停）", interaction_mode=mode, node=node, phase=phase)
+            else:
+                _append_event("detail", f"忽略控制指令: {next_action}", interaction_mode=mode, node=node, phase=phase)
+
+        time.sleep(0.4)
+
+
+def _check_stop(
+    stop_event: Optional[Event],
+    interaction_mode: str = "",
+    node: str = "",
+    phase: str = "",
+) -> None:
+    effective_stop_event = stop_event if stop_event is not None else _CURRENT_STOP_EVENT
+    if effective_stop_event is not None and effective_stop_event.is_set():
         raise WorkflowStopRequested("workflow stop requested")
+    _wait_if_paused(effective_stop_event, interaction_mode=interaction_mode, node=node, phase=phase)
+    if effective_stop_event is not None and effective_stop_event.is_set():
+        raise WorkflowStopRequested("workflow stop requested")
+
+
+def _wait_for_manual_resume_on_start(
+    stop_event: Optional[Event],
+    interaction_mode: str,
+    force_resume: bool,
+) -> None:
+    if force_resume:
+        return
+
+    mode = str(interaction_mode or _CURRENT_INTERACTION_MODE or "web").strip().lower()
+    if mode not in {"web", "cli"}:
+        mode = "web"
+
+    for stale_file in [_action_file(), _control_file()]:
+        try:
+            if os.path.exists(stale_file):
+                os.remove(stale_file)
+                _append_event(
+                    "detail",
+                    f"启动前清理遗留指令: {os.path.basename(stale_file)}",
+                    interaction_mode=mode,
+                    node="bootstrap",
+                    phase="startup",
+                )
+        except Exception as e:
+            _append_event(
+                "detail",
+                f"启动前清理遗留指令失败: {os.path.basename(stale_file)} ({e})",
+                interaction_mode=mode,
+                node="bootstrap",
+                phase="startup",
+            )
+
+    _write_runtime_status(
+        "paused",
+        "默认暂停启动，请点击“继续流程”后再执行。",
+        interaction_mode=mode,
+        node="bootstrap",
+        phase="startup",
+        pending_action="",
+        pending_action_message="",
+    )
+    _append_event("key", "workflow 默认暂停，等待继续指令", interaction_mode=mode, node="bootstrap", phase="startup")
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise WorkflowStopRequested("workflow stop requested")
+
+        command = _consume_control_action()
+        if command is not None:
+            command_action = str(command.get("action", "")).strip()
+            if command_action == _CONTROL_ACTION_RESUME:
+                _write_runtime_status(
+                    "starting",
+                    "收到继续指令，workflow 即将启动。",
+                    interaction_mode=mode,
+                    node="bootstrap",
+                    phase="startup",
+                )
+                _append_event("key", "收到继续指令，开始执行 workflow", interaction_mode=mode, node="bootstrap", phase="startup")
+                return
+            if command_action == _CONTROL_ACTION_PAUSE:
+                _append_event(
+                    "detail",
+                    "流程已处于默认暂停状态，忽略重复暂停指令",
+                    interaction_mode=mode,
+                    node="bootstrap",
+                    phase="startup",
+                )
+            else:
+                _append_event(
+                    "detail",
+                    f"启动等待中忽略控制指令: {command_action}",
+                    interaction_mode=mode,
+                    node="bootstrap",
+                    phase="startup",
+                )
+
+        time.sleep(0.4)
 
 
 def _checkpoint(
@@ -248,7 +473,6 @@ def _latest_project_checkpoint_path() -> str:
 
 
 _AUTO_APPLY_ACTIONS = {
-    "confirm_inputs_ready",
     "set_enable_auto_title",
     "set_enable_search",
     "confirm_related_works",
@@ -376,7 +600,7 @@ def _wait_for_action(
         return action
 
     while True:
-        _check_stop(stop_event)
+        _check_stop(stop_event, interaction_mode=interaction_mode, node=node, phase=str(getattr(state, "workflow_phase", "")))
         action = _consume_action(action_name)
         if action is not None:
             _remember_action_choice(state, action_name=action_name, payload=action, source="web")
@@ -600,7 +824,7 @@ def _wait_for_retry_action(stop_event: Optional[Event], interaction_mode: str = 
     )
 
     while True:
-        _check_stop(stop_event)
+        _check_stop(stop_event, interaction_mode=interaction_mode, node="llm_retry", phase="runtime_retry")
         action = _consume_action("retry_after_llm_failure")
         if action is not None:
             _write_runtime_status("running", "已接收动作: retry_after_llm_failure", interaction_mode=interaction_mode)
@@ -935,13 +1159,22 @@ def _select_best_resume_checkpoint(default_checkpoint: str, model: str, topic: s
 
 
 def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "web", force_resume: bool = False) -> None:
+    global _CURRENT_INTERACTION_MODE, _CURRENT_STOP_EVENT
     interaction_mode = (interaction_mode or "web").strip().lower()
     if interaction_mode not in {"web", "cli"}:
         interaction_mode = "web"
+    _CURRENT_INTERACTION_MODE = interaction_mode
+    _CURRENT_STOP_EVENT = stop_event
 
     os.makedirs(project_path("completed_history"), exist_ok=True)
     _write_runtime_status("starting", "workflow 正在启动", interaction_mode=interaction_mode)
     _append_event("key", "workflow 启动", interaction_mode=interaction_mode)
+
+    _wait_for_manual_resume_on_start(
+        stop_event=stop_event,
+        interaction_mode=interaction_mode,
+        force_resume=bool(force_resume),
+    )
 
     initial_inputs = json.load(open(resolve_inputs_path(), "r", encoding="utf-8-sig"))
     temp_state = PaperWriterState(initial_inputs)
@@ -994,6 +1227,16 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
         state.runtime_checkpoint_path = str(checkpoint_path)
         _write_runtime_status("running", "从初始输入启动", interaction_mode=interaction_mode)
         _append_event("key", "从初始输入启动", interaction_mode=interaction_mode)
+
+    if bool(getattr(state, "auto_apply_saved_actions", True)):
+        state.auto_apply_saved_actions = False
+        _append_event(
+            "detail",
+            "已关闭历史动作自动应用，后续动作需人工点击确认。",
+            interaction_mode=interaction_mode,
+            node="runtime_guard",
+            phase=str(getattr(state, "workflow_phase", "")),
+        )
 
     if (not os.path.exists(checkpoint_path)) and interaction_mode == "web":
         _timed_call(
@@ -1057,6 +1300,10 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
             state.pre_done_title = True
             _checkpoint(state, checkpoint_path, reason="auto_title_disabled_existing_topic", node="pre_research")
 
+        if (not has_valid_topic) and state.enable_auto_title is None:
+            state.enable_auto_title = True
+            _checkpoint(state, checkpoint_path, reason="auto_title_enabled_missing_topic", node="pre_research")
+
         if state.enable_auto_title is None:
             action = _timed_call(
                 "wait_set_enable_auto_title",
@@ -1109,7 +1356,7 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
                 state,
                 checkpoint_path,
                 action_name="set_enable_search",
-                prompt="请在 Web 面板选择是否执行文献检索。",
+                prompt="请在【流程】面板选择是否执行文献检索。",
                 node="pre_research",
                 interaction_mode=interaction_mode,
                 stop_event=stop_event,
@@ -1479,7 +1726,9 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
         print("| 开始审稿阶段")
         if not hasattr(state, "rewrite_done_sub_ids"):
             state.rewrite_done_sub_ids = []
-        for _ in range(state.max_review_rounds):
+        review_safety_limit = MAX_REVIEW_ROUNDS_SAFETY_LIMIT
+        state.max_review_rounds = review_safety_limit
+        for _ in range(review_safety_limit):
             # Reset rewrite-progress markers only when a new review round begins.
             state.rewrite_done_sub_ids = []
             _check_stop(stop_event)
@@ -1581,9 +1830,9 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
                 _checkpoint(state, checkpoint_path, reason="user_stopped_review", node="done")
                 break
         else:
-            print(f"| [WARN] 达到最大审稿轮数 {state.max_review_rounds}，请人工复核。")
-            _write_runtime_status("done", "达到最大审稿轮数，等待人工复核", interaction_mode=interaction_mode)
-            _append_event("key", "达到最大审稿轮数", interaction_mode=interaction_mode)
+            print(f"| [WARN] 达到系统审稿安全上限 {review_safety_limit} 轮，请人工复核。")
+            _write_runtime_status("done", f"达到系统审稿安全上限 {review_safety_limit} 轮，等待人工复核", interaction_mode=interaction_mode)
+            _append_event("key", f"达到系统审稿安全上限 {review_safety_limit} 轮", interaction_mode=interaction_mode)
 
 
 def _run_workflow_safely(stop_event: Optional[Event] = None, interaction_mode: str = "web") -> None:
@@ -1598,6 +1847,10 @@ def _run_workflow_safely(stop_event: Optional[Event] = None, interaction_mode: s
             _append_event("key", "workflow 收到停止信号并退出", interaction_mode=interaction_mode)
             print("| 工作流收到停止信号，已安全退出。")
             return
+        except WorkflowResumeFromCheckpoint:
+            force_resume_next = True
+            _append_event("key", "流程继续：从 checkpoint 重新续跑", interaction_mode=interaction_mode)
+            continue
         except Exception as e:
             if "LLM_RETRY_EXHAUSTED" in str(e):
                 _write_runtime_status(

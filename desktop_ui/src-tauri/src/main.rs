@@ -269,7 +269,7 @@ fn start_backend_internal(
 ) -> Result<BackendStatus, String> {
     let workspace = resolve_workspace_root(workspace_root);
     let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = port.unwrap_or(8765);
+    let port = port.unwrap_or(18765);
     let fallback_workspace_root = workspace_display(workspace.clone());
     let sidecar_hint = backend_state
         .sidecar_hint
@@ -318,6 +318,47 @@ fn start_backend_internal(
         push_candidate(&mut backend_exe_candidates, candidate);
     }
 
+    // Prefer Python source backend first to avoid stale sidecar API mismatches during development.
+    if let Some(workspace) = workspace.as_ref() {
+        let candidates = collect_python_candidates(python_path, workspace.as_path());
+
+        for candidate in candidates {
+            match try_start_with_python(&candidate, workspace.as_path(), &host, port) {
+                Ok(child) => {
+                    let pid = child.id();
+                    *child_guard = Some(child);
+                    if let Ok(mut x) = backend_state.last_error.lock() {
+                        *x = None;
+                    }
+                    if let Ok(mut x) = backend_state.last_backend_command.lock() {
+                        *x = Some(candidate.clone());
+                    }
+                    if let Ok(mut x) = backend_state.last_workspace_root.lock() {
+                        *x = Some(workspace.display().to_string());
+                    }
+
+                    let ready = wait_for_port(&host, port, Duration::from_secs(8));
+                    let message = if ready {
+                        format!("后端已启动，地址 http://{host}:{port}")
+                    } else {
+                        format!("后端进程已启动，接口预热中: http://{host}:{port}")
+                    };
+
+                    return Ok(BackendStatus {
+                        running: true,
+                        pid: Some(pid),
+                        message,
+                        workspace_root: workspace.display().to_string(),
+                        python_path: candidate,
+                    });
+                }
+                Err(err) => {
+                    errors.push(format!("[python {candidate}] {err}"));
+                }
+            }
+        }
+    }
+
     for candidate in backend_exe_candidates {
         match try_start_with_backend_exe(&candidate, &host, port) {
             Ok(child) => {
@@ -360,45 +401,7 @@ fn start_backend_internal(
         }
     }
 
-    if let Some(workspace) = workspace {
-        let candidates = collect_python_candidates(python_path, workspace.as_path());
-
-        for candidate in candidates {
-            match try_start_with_python(&candidate, workspace.as_path(), &host, port) {
-                Ok(child) => {
-                    let pid = child.id();
-                    *child_guard = Some(child);
-                    if let Ok(mut x) = backend_state.last_error.lock() {
-                        *x = None;
-                    }
-                    if let Ok(mut x) = backend_state.last_backend_command.lock() {
-                        *x = Some(candidate.clone());
-                    }
-                    if let Ok(mut x) = backend_state.last_workspace_root.lock() {
-                        *x = Some(workspace.display().to_string());
-                    }
-
-                    let ready = wait_for_port(&host, port, Duration::from_secs(8));
-                    let message = if ready {
-                        format!("后端已启动，地址 http://{host}:{port}")
-                    } else {
-                        format!("后端进程已启动，接口预热中: http://{host}:{port}")
-                    };
-
-                    return Ok(BackendStatus {
-                        running: true,
-                        pid: Some(pid),
-                        message,
-                        workspace_root: workspace.display().to_string(),
-                        python_path: candidate,
-                    });
-                }
-                Err(err) => {
-                    errors.push(format!("[python {candidate}] {err}"));
-                }
-            }
-        }
-    } else {
+    if workspace.is_none() && errors.is_empty() {
         errors.push("未识别到工作区根目录，且 sidecar 不可用".to_string());
     }
 
@@ -568,6 +571,56 @@ fn stop_backend(state: State<BackendState>, workspace_root: Option<String>) -> R
     })
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let target = url.trim().to_string();
+    if !(target.starts_with("http://") || target.starts_with("https://")) {
+        return Err("仅支持 http/https 外部链接".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("cmd");
+        command
+            .arg("/C")
+            .arg("start")
+            .arg("")
+            .arg(&target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        apply_hidden_spawn_flags(&mut command);
+        command
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {e}"))?;
+        return Ok(());
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(BackendState::default())
@@ -592,7 +645,7 @@ fn main() {
             if let Err(err) = start_backend_internal(
                 &state,
                 Some("127.0.0.1".to_string()),
-                Some(8765),
+                Some(18765),
                 None,
                 None,
             ) {
@@ -606,7 +659,7 @@ fn main() {
                 stop_backend_child(&state);
             }
         })
-        .invoke_handler(tauri::generate_handler![backend_status, start_backend, stop_backend])
+        .invoke_handler(tauri::generate_handler![backend_status, start_backend, stop_backend, open_external_url])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

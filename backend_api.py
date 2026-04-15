@@ -37,13 +37,13 @@ except Exception:
 
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 18765
 EDITABLE_INPUT_REL_FILES = [
   "inputs/existing_material.md",
   "inputs/existing_sections.md",
   "inputs/related_works.md",
-  "inputs/revision_requests.md",
   "inputs/write_requests.md",
+  "inputs/revision_requests.md",
 ]
 
 
@@ -57,6 +57,10 @@ def get_editable_input_display_files() -> list[str]:
 
 def _action_file() -> str:
     return project_path("completed_history", "workflow_actions.json")
+
+
+def _control_file() -> str:
+  return project_path("completed_history", "workflow_control.json")
 
 
 def _runtime_file() -> str:
@@ -532,6 +536,74 @@ def _write_action(payload: dict) -> None:
     raise RuntimeError(f"动作写入失败: {last_error}")
 
 
+def _collect_control_targets(action_name: str) -> list[str]:
+  targets: set[str] = set()
+
+  try:
+    targets.add(str(Path(_control_file()).resolve()))
+  except Exception:
+    pass
+
+  try:
+    active_root = Path(get_active_project_root())
+    targets.add(str((active_root / "completed_history" / "workflow_control.json").resolve()))
+  except Exception:
+    pass
+
+  status_filters = {
+    "pause_workflow": {"running"},
+    "resume_workflow": {"paused"},
+  }
+  allowed_statuses = status_filters.get(action_name, {"running", "starting", "paused"})
+
+  for project_name in list_available_projects():
+    root = get_project_root_by_name(project_name)
+    if root is None:
+      continue
+
+    runtime_file = root / "completed_history" / "workflow_runtime.json"
+    if not runtime_file.exists():
+      continue
+
+    try:
+      with open(runtime_file, "r", encoding="utf-8-sig") as f:
+        runtime_payload = json.load(f)
+    except Exception:
+      continue
+
+    if not isinstance(runtime_payload, dict):
+      continue
+
+    status = str(runtime_payload.get("status", "")).strip().lower()
+    if status in allowed_statuses:
+      targets.add(str((root / "completed_history" / "workflow_control.json").resolve()))
+
+  return sorted(targets)
+
+
+def _write_control(payload: dict) -> None:
+  action_name = str((payload or {}).get("action", "")).strip()
+  targets = _collect_control_targets(action_name)
+  if not targets:
+    targets = [str(Path(_control_file()).resolve())]
+
+  text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+  success = 0
+  last_error: Exception | None = None
+
+  for control_file in targets:
+    try:
+      os.makedirs(os.path.dirname(control_file), exist_ok=True)
+      with open(control_file, "w", encoding="utf-8") as f:
+        f.write(text)
+      success += 1
+    except Exception as e:
+      last_error = e
+
+  if success == 0 and last_error is not None:
+    raise RuntimeError(f"控制指令写入失败: {last_error}")
+
+
 def list_available_projects() -> list[str]:
   return list_projects()
 
@@ -795,7 +867,7 @@ def _read_state_snapshot() -> dict:
         checkpoint = _select_checkpoint_for_snapshot(inputs_data, fallback_topic, fallback_model, fallback_language)
 
     if not checkpoint:
-      fallback_output, _ = build_output_paths(fallback_model, fallback_topic, "en")
+        fallback_output, _ = build_output_paths(fallback_model, fallback_topic, "en")
         return {
             "ok": True,
             "has_checkpoint": False,
@@ -834,21 +906,21 @@ def _read_state_snapshot() -> dict:
             "checkpoint_path": checkpoint,
             "message": f"读取 checkpoint 失败: {e}",
             "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-          "version_snapshots": [],
-          "key_milestones": [],
+            "version_snapshots": [],
+            "key_milestones": [],
             "project_name": project_name,
             "project_root": project_root,
             **runtime,
         }
 
-      output_path = output_path_from_checkpoint(checkpoint)
-      if not output_path:
+    output_path = output_path_from_checkpoint(checkpoint)
+    if not output_path:
         output_path, _ = build_output_paths(
-          str(data.get("model", fallback_model)),
-          str(data.get("topic", fallback_topic)),
-          "en",
+            str(data.get("model", fallback_model)),
+            str(data.get("topic", fallback_topic)),
+            "en",
         )
-      version_snapshots, key_milestones = _list_version_snapshots(output_path)
+    version_snapshots, key_milestones = _list_version_snapshots(output_path)
 
     completed_sections_raw = data.get("completed_sections", []) or []
     if isinstance(completed_sections_raw, dict):
@@ -868,14 +940,14 @@ def _read_state_snapshot() -> dict:
 
     rewrite_done_raw = data.get("rewrite_done_sub_ids", []) or []
     if isinstance(rewrite_done_raw, list):
-      rewrite_done_sub_ids = [str(x).strip() for x in rewrite_done_raw if str(x).strip()]
+        rewrite_done_sub_ids = [str(x).strip() for x in rewrite_done_raw if str(x).strip()]
     else:
-      rewrite_done_sub_ids = []
+        rewrite_done_sub_ids = []
     rewrite_done_set = set(rewrite_done_sub_ids)
     pending_rewrite_count = sum(
-      1
-      for item in reviewed_sections
-      if str((item or {}).get("sub_chapter_id", "")).strip() not in rewrite_done_set
+        1
+        for item in reviewed_sections
+        if str((item or {}).get("sub_chapter_id", "")).strip() not in rewrite_done_set
     )
 
     outline = _coerce_outline_list(data)
@@ -1527,7 +1599,7 @@ HTML = """<!doctype html>
         setText('pending', '-');
         setText('words', '-');
         setText('action-message', '待处理动作说明: -');
-        setText('action-panel', '无法连接 /api/state。请确认已运行 desktop_backend.py（或桌面端已自动拉起后端），并访问 http://127.0.0.1:8765');
+        setText('action-panel', '无法连接 /api/state。请确认已运行 desktop_backend.py（或桌面端已自动拉起后端），并访问 http://127.0.0.1:18765');
       } finally {
         setLoading(false);
       }
@@ -1940,10 +2012,86 @@ class Handler(BaseHTTPRequestHandler):
         "set_architecture_force_continue",
         "retry_after_llm_failure",
         "confirm_next_review_round",
+        "pause_workflow",
+        "resume_workflow",
       }
       if action not in allowed:
         body = json.dumps({"ok": False, "message": f"不支持的动作: {action}"}, ensure_ascii=False).encode("utf-8")
         self.send_response(400)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+      if action in {"pause_workflow", "resume_workflow"}:
+        runtime_snapshot = _read_runtime_snapshot()
+        runtime_status = str(runtime_snapshot.get("runtime_status", "unknown")).strip().lower()
+        runtime_pending_action = str(runtime_snapshot.get("runtime_pending_action", "")).strip()
+        if action == "pause_workflow" and runtime_status != "running":
+          body = json.dumps({"ok": False, "message": "当前流程不在运行中，无法暂停。"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+        if action == "pause_workflow" and runtime_pending_action:
+          body = json.dumps({"ok": False, "message": "当前存在待审批动作，请先处理审批后再暂停。"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+        if action == "resume_workflow" and runtime_status != "paused":
+          body = json.dumps({"ok": False, "message": "当前流程未处于暂停状态，无需继续。"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(400)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        try:
+          _write_control(payload)
+        except Exception as e:
+          body = json.dumps({"ok": False, "message": f"控制指令写入失败: {e}"}, ensure_ascii=False).encode("utf-8")
+          self.send_response(500)
+          self.send_header("Content-Type", "application/json; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
+
+        if action == "pause_workflow":
+          try:
+            _write_runtime_status(
+              "paused",
+              "已接收暂停指令，流程将于当前节点完成后暂停。",
+              interaction_mode=str(runtime_snapshot.get("runtime_interaction_mode", "web")),
+              node=str(runtime_snapshot.get("runtime_node", "")),
+              phase=str(runtime_snapshot.get("runtime_phase", "")),
+              pending_action="",
+              pending_action_message="",
+            )
+          except Exception:
+            pass
+        elif action == "resume_workflow":
+          try:
+            _write_runtime_status(
+              "running",
+              "已接收继续指令，流程将恢复执行。",
+              interaction_mode=str(runtime_snapshot.get("runtime_interaction_mode", "web")),
+              node=str(runtime_snapshot.get("runtime_node", "")),
+              phase=str(runtime_snapshot.get("runtime_phase", "")),
+            )
+          except Exception:
+            pass
+
+        message = "暂停指令已写入" if action == "pause_workflow" else "继续指令已写入"
+        body = json.dumps({"ok": True, "message": message}, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

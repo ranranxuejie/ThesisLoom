@@ -21,7 +21,7 @@ def _run_workflow_with_restart(stop_event: threading.Event, interaction_mode: st
 def main() -> None:
     parser = argparse.ArgumentParser(description="ThesisLoom desktop backend runner")
     parser.add_argument("--host", default="127.0.0.1", help="dashboard host")
-    parser.add_argument("--port", type=int, default=8765, help="dashboard port")
+    parser.add_argument("--port", type=int, default=18765, help="dashboard port")
     parser.add_argument(
         "--interaction",
         choices=["web", "cli"],

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import packageJson from "../package.json";
 import {
   fetchProjects,
   fetchEditableFiles,
@@ -17,18 +18,29 @@ import {
 } from "./api";
 import type { BackendStatus, LogMode, WorkflowStateSnapshot } from "./types";
 
-const API_BASE_URL = "http://127.0.0.1:8765";
+const API_BASE_URL = "http://127.0.0.1:18765";
 
-type PageKey = "projects" | "inputs" | "outputs" | "workflow";
+type PageKey = "projects" | "inputs" | "outputs" | "workflow" | "about";
 type OutputTab = "paper" | "pipeline";
 type ModelProvider = "base_url" | "doubao" | "openrouter";
+type TutorialPopoverPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+const APP_VERSION = String((packageJson as { version?: string }).version || "0.1.0");
+const TUTORIAL_DISMISSED_KEY = "thesisloom:tutorial-dismissed";
+
+interface TutorialStep {
+  key: string;
+  title: string;
+  body: string;
+  page: PageKey;
+  position: TutorialPopoverPosition;
+}
 
 interface InputsFormState {
   topic: string;
   language: "English" | "Chinese";
   model: string;
   model_provider: ModelProvider;
-  max_review_rounds: number;
   paper_search_limit: number;
   openalex_api_key: string;
   ark_api_key: string;
@@ -36,18 +48,27 @@ interface InputsFormState {
   model_api_key: string;
 }
 
+type InputsFieldErrors = Partial<Record<keyof InputsFormState, string>>;
+
+interface InputsValidationResult {
+  fieldErrors: InputsFieldErrors;
+  blockingIssues: string[];
+  warnings: string[];
+}
+
 const DEFAULT_INPUTS_FORM: InputsFormState = {
   topic: "",
   language: "English",
   model: "gemini-3.1-pro",
   model_provider: "base_url",
-  max_review_rounds: 3,
   paper_search_limit: 30,
   openalex_api_key: "",
   ark_api_key: "",
   base_url: "",
   model_api_key: "",
 };
+
+const DOUBAO_DEFAULT_MODEL = "doubao-seed-2-0-pro-260215";
 
 const FLOW_STEPS = [
   {
@@ -97,6 +118,37 @@ const FLOW_STEPS = [
   },
 ] as const;
 
+const TUTORIAL_STEPS: TutorialStep[] = [
+  {
+    key: "projects",
+    title: "步骤 1：先创建或打开项目",
+    body: "在“项目”页选择已有项目，或输入新项目名称创建。建议先确认项目目录后再进行后续输入与流程操作。",
+    page: "projects",
+    position: "top-left",
+  },
+  {
+    key: "inputs",
+    title: "步骤 2：填写输入与参数",
+    body: "在“输入”页填写论文主题、模型参数，并补充 existing_material、write_requests 等输入文件。保存后再启动流程。",
+    page: "inputs",
+    position: "top-right",
+  },
+  {
+    key: "workflow",
+    title: "步骤 3：在流程页推进任务",
+    body: "在“流程”页点击开始工作流，并按提示处理待人工动作。这里也可以使用暂停/继续控制长流程执行。",
+    page: "workflow",
+    position: "bottom-right",
+  },
+  {
+    key: "outputs",
+    title: "步骤 4：查看输出结果",
+    body: "流程执行后，到“输出”页查看正文与过程产物。若需要回退，可在流程页使用关键节点与版本回退功能。",
+    page: "outputs",
+    position: "bottom-left",
+  },
+];
+
 const LITERATURE_REVIEW_NODES = new Set([
   "node_search_query_builder",
   "node_search_paper",
@@ -135,6 +187,14 @@ const PHASE_LABELS: Record<string, string> = {
   done: "已完成",
 };
 
+const PAGE_LABELS: Record<PageKey, string> = {
+  projects: "项目",
+  inputs: "输入",
+  workflow: "流程",
+  outputs: "输出",
+  about: "关于",
+};
+
 const ACTION_LABELS: Record<string, string> = {
   confirm_inputs_ready: "确认输入已准备",
   set_enable_auto_title: "是否自动生成标题",
@@ -144,6 +204,8 @@ const ACTION_LABELS: Record<string, string> = {
   set_architecture_force_continue: "架构人工放行",
   retry_after_llm_failure: "LLM 失败后继续",
   confirm_next_review_round: "是否进入下一轮审稿",
+  pause_workflow: "暂停流程",
+  resume_workflow: "继续流程",
 };
 
 const NODE_LABELS: Record<string, string> = {
@@ -282,12 +344,122 @@ function getReviewPriorityLabel(priority: string): string {
   return "中优先级";
 }
 
-function prettyJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value ?? "");
+function getReviewRoundTag(reviewRound: number): string {
+  const round = Math.max(0, Math.floor(Number(reviewRound) || 0));
+  if (round <= 1) {
+    return "";
   }
+
+  const labels = ["第一", "第二", "第三", "第四", "第五", "第六", "第七", "第八", "第九", "第十"];
+  const prefix = labels[round - 1] || `第${round}`;
+  return `【${prefix}轮】`;
+}
+
+function isReviewFlowStep(stepKey: string): boolean {
+  return stepKey === "review_pending" || stepKey === "review_plan" || stepKey === "review_detail" || stepKey === "rewrite_execution";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => item !== null);
+}
+
+function pickText(record: Record<string, unknown>, keys: string[], fallback = "-"): string {
+  for (const key of keys) {
+    const text = String(record[key] ?? "").trim();
+    if (text) {
+      return text;
+    }
+  }
+  return fallback;
+}
+
+function issueListFromValue(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => Boolean(item));
+}
+
+function formatDurationSeconds(rawSeconds: number): string {
+  const total = Math.max(0, Math.round(Number(rawSeconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  return `${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function isValidHttpUrl(raw: string): boolean {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return false;
+  }
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function validateInputsForm(form: InputsFormState): InputsValidationResult {
+  const fieldErrors: InputsFieldErrors = {};
+  const blockingIssues: string[] = [];
+  const warnings: string[] = [];
+
+  const topic = String(form.topic || "").trim();
+  if (!topic) {
+    warnings.push("论文标题可留空，流程会自动生成标题。");
+  } else if (topic.length < 12) {
+    warnings.push("论文标题较短，建议补充研究对象、方法和目标。");
+  }
+
+  const model = String(form.model || "").trim();
+  if (!model) {
+    const message = "模型名称不能为空。";
+    fieldErrors.model = message;
+    blockingIssues.push(message);
+  }
+
+  const searchLimit = Number(form.paper_search_limit || 0);
+  if (!Number.isFinite(searchLimit) || searchLimit < 1 || searchLimit > 300) {
+    const message = "文献检索数量需在 1 到 300 之间。";
+    fieldErrors.paper_search_limit = message;
+    blockingIssues.push(message);
+  }
+
+  const baseUrl = String(form.base_url || "").trim();
+  if (form.model_provider === "base_url") {
+    if (!baseUrl) {
+      warnings.push("当前使用自定义 Base URL，建议填写服务地址以避免请求失败。");
+    } else if (!isValidHttpUrl(baseUrl)) {
+      const message = "模型服务地址格式无效，请使用 http(s):// 开头的完整 URL。";
+      fieldErrors.base_url = message;
+      blockingIssues.push(message);
+    }
+  }
+
+  if (form.model_provider === "openrouter" && baseUrl && !isValidHttpUrl(baseUrl)) {
+    warnings.push("检测到 base_url 格式异常，建议改为 OpenRouter 默认地址。");
+  }
+
+  return { fieldErrors, blockingIssues, warnings };
 }
 
 function toNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -318,8 +490,8 @@ function describeInputFile(path: string): string {
     "existing_sections.md": "已有章节（可复用正文）",
     "related_works.md": "相关研究整理",
     "research_gaps.md": "研究空白与创新点",
-    "revision_requests.md": "审稿改写要求",
     "write_requests.md": "写作偏好与格式要求",
+    "revision_requests.md": "审稿改写要求",
   };
 
   return map[name] || displayInputFileName(path);
@@ -368,7 +540,6 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
     language,
     model: String(parsed.model ?? DEFAULT_INPUTS_FORM.model),
     model_provider: modelProvider,
-    max_review_rounds: toNumber(parsed.max_review_rounds, DEFAULT_INPUTS_FORM.max_review_rounds, 1, 20),
     paper_search_limit: toNumber(parsed.paper_search_limit, DEFAULT_INPUTS_FORM.paper_search_limit, 1, 300),
     openalex_api_key: String(parsed.openalex_api_key ?? DEFAULT_INPUTS_FORM.openalex_api_key),
     ark_api_key: String(parsed.ark_api_key ?? DEFAULT_INPUTS_FORM.ark_api_key),
@@ -386,7 +557,6 @@ function composeInputsPayload(form: InputsFormState, extra: Record<string, unkno
     language: form.language,
     model: form.model,
     model_provider: form.model_provider,
-    max_review_rounds: form.max_review_rounds,
     paper_search_limit: form.paper_search_limit,
     openalex_api_key: form.openalex_api_key,
     ark_api_key: form.ark_api_key,
@@ -398,6 +568,18 @@ function composeInputsPayload(form: InputsFormState, extra: Record<string, unkno
 function App() {
   const [page, setPage] = useState<PageKey>("workflow");
   const [outputTab, setOutputTab] = useState<OutputTab>("paper");
+  const [outputSearchQuery, setOutputSearchQuery] = useState<string>("");
+  const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    return window.localStorage.getItem(TUTORIAL_DISMISSED_KEY) !== "1";
+  });
+  const [tutorialStepIndex, setTutorialStepIndex] = useState<number>(0);
+  const [paperExpandAll, setPaperExpandAll] = useState(false);
+  const [paperExpandToken, setPaperExpandToken] = useState(0);
+  const [pipelineExpandAll, setPipelineExpandAll] = useState(false);
+  const [pipelineExpandToken, setPipelineExpandToken] = useState(0);
 
   const [backendStatus, setBackendStatus] = useState<BackendStatus>(EMPTY_BACKEND_STATUS);
   const [stateSnapshot, setStateSnapshot] = useState<WorkflowStateSnapshot | null>(null);
@@ -432,14 +614,84 @@ function App() {
   });
   const lastPendingActionRef = useRef<string>("");
 
-  const [loadRequirements, setLoadRequirements] = useState(true);
-  const [autoConfirmActions, setAutoConfirmActions] = useState(false);
-  const autoConfirmBusyRef = useRef(false);
-  const lastAutoConfirmKeyRef = useRef("");
+  const [skipApprovalEnabled, setSkipApprovalEnabled] = useState(false);
+  const skipApprovalBusyRef = useRef(false);
+  const lastSkipApprovalKeyRef = useRef("");
+  const [runtimeControlBusy, setRuntimeControlBusy] = useState(false);
   const baseUrl = API_BASE_URL;
 
   const pushNotice = useCallback((kind: "info" | "ok" | "warn" | "error", text: string) => {
     setNotice({ kind, text, visible: true, token: Date.now() });
+  }, []);
+
+  const copyTextToClipboard = useCallback(async (content: string, successText: string) => {
+    const text = String(content || "");
+    if (!text.trim()) {
+      pushNotice("warn", "当前内容为空，无法复制");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      pushNotice("ok", successText);
+    } catch {
+      pushNotice("warn", "复制失败，请检查系统剪贴板权限");
+    }
+  }, [pushNotice]);
+
+  const openExternalLink = useCallback(async (url: string) => {
+    const target = String(url || "").trim();
+    if (!isValidHttpUrl(target)) {
+      pushNotice("warn", "链接地址无效，无法打开");
+      return;
+    }
+
+    try {
+      await invoke("open_external_url", { url: target });
+    } catch (err) {
+      pushNotice("error", `打开链接失败: ${String(err)}`);
+    }
+  }, [pushNotice]);
+
+  const openTutorial = useCallback((startIndex = 0) => {
+    const normalized = Math.max(0, Math.min(startIndex, TUTORIAL_STEPS.length - 1));
+    setTutorialStepIndex(normalized);
+    window.localStorage.removeItem(TUTORIAL_DISMISSED_KEY);
+    setTutorialOpen(true);
+  }, []);
+
+  const closeTutorial = useCallback((skipped: boolean) => {
+    window.localStorage.setItem(TUTORIAL_DISMISSED_KEY, "1");
+    setTutorialOpen(false);
+    if (skipped) {
+      pushNotice("info", "已跳过教程，可在“关于”页重新打开。 ");
+      return;
+    }
+    pushNotice("ok", "教程已完成，可开始正式使用。");
+  }, [pushNotice]);
+
+  const prevTutorialStep = useCallback(() => {
+    setTutorialStepIndex((prev) => Math.max(0, prev - 1));
+  }, []);
+
+  const nextTutorialStep = useCallback(() => {
+    setTutorialStepIndex((prev) => {
+      if (prev >= TUTORIAL_STEPS.length - 1) {
+        closeTutorial(false);
+        return prev;
+      }
+      return prev + 1;
+    });
+  }, [closeTutorial]);
+
+  const togglePaperExpandAll = useCallback(() => {
+    setPaperExpandAll((prev) => !prev);
+    setPaperExpandToken((prev) => prev + 1);
+  }, []);
+
+  const togglePipelineExpandAll = useCallback(() => {
+    setPipelineExpandAll((prev) => !prev);
+    setPipelineExpandToken((prev) => prev + 1);
   }, []);
 
   const refreshBackendStatus = useCallback(async () => {
@@ -543,6 +795,32 @@ function App() {
       pushNotice("warn", `读取可编辑文件失败: ${String(err)}`);
     }
   }, [baseUrl, pushNotice]);
+
+  const openProjectByName = useCallback(
+    async (projectNameRaw: string) => {
+      const projectName = String(projectNameRaw || "").trim();
+      if (!projectName) {
+        pushNotice("warn", "请先选择要打开的项目");
+        return false;
+      }
+
+      const result = await openProject(baseUrl, projectName);
+      if (!result.ok) {
+        pushNotice("error", result.message || "打开项目失败");
+        return false;
+      }
+
+      setSelectedProjectName(result.project_name || projectName);
+      pushNotice("ok", `已打开项目: ${result.project_name || projectName}`);
+      await refreshProjects();
+      await refreshInputs();
+      await loadEditableFiles();
+      await refreshState();
+      await refreshLogs();
+      return true;
+    },
+    [baseUrl, loadEditableFiles, pushNotice, refreshInputs, refreshLogs, refreshProjects, refreshState],
+  );
 
   const loadSelectedFile = useCallback(
     async (path: string) => {
@@ -656,6 +934,15 @@ function App() {
     [baseUrl, pushNotice, refreshLogs, refreshState],
   );
 
+  const handleRuntimeControlClick = useCallback(async (actionName: "pause_workflow" | "resume_workflow") => {
+    setRuntimeControlBusy(true);
+    try {
+      await sendAction({ action: actionName });
+    } finally {
+      setRuntimeControlBusy(false);
+    }
+  }, [sendAction]);
+
   const rollbackToVersion = useCallback(
     async (statePath: string, label: string) => {
       const normalizedPath = String(statePath || "").trim();
@@ -687,12 +974,19 @@ function App() {
   );
 
   const saveInputsAndStart = useCallback(async () => {
+    const startValidation = validateInputsForm(inputsForm);
+    if (startValidation.blockingIssues.length > 0) {
+      pushNotice("warn", `请先修复输入参数问题：${startValidation.blockingIssues[0]}`);
+      setPage("inputs");
+      return;
+    }
+
     const ok = await persistInputsForm(false);
     if (!ok) {
       return;
     }
     await sendAction({ action: "confirm_inputs_ready" });
-  }, [persistInputsForm, sendAction]);
+  }, [inputsForm, persistInputsForm, pushNotice, sendAction]);
 
   const ensureBackendStarted = useCallback(async (silent = false) => {
     try {
@@ -710,7 +1004,7 @@ function App() {
 
       const result = await invoke<BackendStatus>("start_backend", {
         host: "127.0.0.1",
-        port: 8765,
+        port: 18765,
         python_path: "",
         workspace_root: "",
       });
@@ -727,31 +1021,6 @@ function App() {
       return null;
     }
   }, [loadEditableFiles, pushNotice, refreshInputs, refreshLogs, refreshProjects, refreshState]);
-
-  const openExistingProject = useCallback(async () => {
-    const projectName = selectedProjectName.trim();
-    if (!projectName) {
-      pushNotice("warn", "请先选择要打开的项目");
-      return;
-    }
-
-    try {
-      const result = await openProject(baseUrl, projectName);
-      if (!result.ok) {
-        pushNotice("error", result.message || "打开项目失败");
-        return;
-      }
-
-      pushNotice("ok", `已打开项目: ${result.project_name || projectName}`);
-      await refreshProjects();
-      await refreshInputs();
-      await loadEditableFiles();
-      await refreshState();
-      await refreshLogs();
-    } catch (err) {
-      pushNotice("error", `打开项目失败: ${String(err)}`);
-    }
-  }, [baseUrl, loadEditableFiles, pushNotice, refreshInputs, refreshLogs, refreshProjects, refreshState, selectedProjectName]);
 
   const openSelectedProjectFolder = useCallback(async () => {
     const projectName = selectedProjectName.trim();
@@ -781,24 +1050,16 @@ function App() {
     }
 
     try {
-      const result = await openProject(baseUrl, projectName);
-      if (!result.ok) {
-        pushNotice("error", result.message || "新建项目失败");
+      const opened = await openProjectByName(projectName);
+      if (!opened) {
         return;
       }
 
       setNewProjectName("");
-      setSelectedProjectName(result.project_name || projectName);
-      pushNotice("ok", `已创建并打开项目: ${result.project_name || projectName}`);
-      await refreshProjects();
-      await refreshInputs();
-      await loadEditableFiles();
-      await refreshState();
-      await refreshLogs();
     } catch (err) {
       pushNotice("error", `新建项目失败: ${String(err)}`);
     }
-  }, [baseUrl, loadEditableFiles, newProjectName, pushNotice, refreshInputs, refreshLogs, refreshProjects, refreshState]);
+  }, [newProjectName, openProjectByName, pushNotice]);
 
   const moveProjectToTrash = useCallback(async () => {
     const projectName = selectedProjectName.trim();
@@ -918,13 +1179,71 @@ function App() {
     }
   }, [loadSelectedFile, selectedFilePath]);
 
+  useEffect(() => {
+    if (!tutorialOpen) {
+      return;
+    }
+    const step = TUTORIAL_STEPS[tutorialStepIndex];
+    if (!step) {
+      return;
+    }
+    if (page !== step.page) {
+      setPage(step.page);
+    }
+  }, [page, tutorialOpen, tutorialStepIndex]);
+
+  useEffect(() => {
+    if (!tutorialOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeTutorial(true);
+        return;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        prevTutorialStep();
+        return;
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        nextTutorialStep();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeTutorial, nextTutorialStep, prevTutorialStep, tutorialOpen]);
+
   const phase = stateSnapshot?.workflow_phase || "idle";
   const pendingAction = stateSnapshot?.pending_action || "";
   const runtimeStatus = stateSnapshot?.runtime_status || "unknown";
+  const runtimeStatusLower = String(runtimeStatus || "").toLowerCase();
+  const hasPendingAction = Boolean(String(pendingAction || "").trim());
+  const canPauseWorkflow = runtimeStatusLower === "running" && !hasPendingAction;
+  const canResumeWorkflow = runtimeStatusLower === "paused";
+  const canToggleRuntimeControl = canPauseWorkflow || canResumeWorkflow;
+  const runtimeControlAction: "pause_workflow" | "resume_workflow" = canResumeWorkflow ? "resume_workflow" : "pause_workflow";
+  const runtimeControlText = canResumeWorkflow ? "继续流程" : "暂停流程";
+  const runtimeControlHint = canResumeWorkflow
+    ? "当前流程已暂停，点击“继续流程”恢复。"
+    : canPauseWorkflow
+      ? "运行中，可点击暂停。"
+      : hasPendingAction
+        ? "当前有待处理审批动作，暂停不可用。"
+        : "当前不在可暂停/继续状态。";
+  const runtimeIsRunning = runtimeStatusLower === "running";
   const currentNode = stateSnapshot?.current_node || "";
   const currentSubId = stateSnapshot?.current_sub_chapter_id || "";
   const flowKey = resolveFlowKey(stateSnapshot);
   const flowIndex = Math.max(0, FLOW_STEPS.findIndex((x) => x.key === flowKey));
+  const reviewRound = Number(stateSnapshot?.review_round ?? 0);
+  const reviewRoundTag = getReviewRoundTag(reviewRound);
   const topicLine = stateSnapshot?.topic || stateSnapshot?.inputs_topic || "(empty topic)";
   const paperOutputs = stateSnapshot?.paper_outputs || [];
   const searchQueries = stateSnapshot?.search_queries || [];
@@ -944,8 +1263,33 @@ function App() {
   );
   const nextSteps = stateSnapshot?.next_steps_plan || [];
   const nextStepsUpdatedAt = stateSnapshot?.next_steps_updated_at || "";
-  const flowMajorLabel = FLOW_STEPS.find((x) => x.key === flowKey)?.title || "";
+  const flowMajorBaseLabel = FLOW_STEPS.find((x) => x.key === flowKey)?.title || "";
+  const flowMajorLabel = isReviewFlowStep(flowKey) && reviewRoundTag ? `${flowMajorBaseLabel}${reviewRoundTag}` : flowMajorBaseLabel;
   const phaseMajor = flowMajorLabel || PHASE_LABELS[phase] || phase;
+  const isDoubaoProvider = inputsForm.model_provider === "doubao";
+  const isOpenRouterProvider = inputsForm.model_provider === "openrouter";
+  const activeApiKeyValue = isDoubaoProvider ? inputsForm.ark_api_key : inputsForm.model_api_key;
+  const activeApiKeyTitle = isDoubaoProvider ? "ark_api_key" : "model_api_key";
+  const activeApiKeyLabel = isDoubaoProvider
+    ? "豆包 Ark API 密钥（可选）"
+    : isOpenRouterProvider
+      ? "OpenRouter API 密钥（可选）"
+      : "模型服务 API 密钥（可选）";
+  const activeApiKeyPlaceholder = isDoubaoProvider
+    ? "请输入豆包 Ark API Key"
+    : isOpenRouterProvider
+      ? "请输入 OpenRouter API Key"
+      : "可为空";
+  const activeApiKeyLink = isDoubaoProvider
+    ? "https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement"
+    : isOpenRouterProvider
+      ? "https://openrouter.ai/workspaces/default/keys"
+      : "";
+  const activeApiKeyHelp = isDoubaoProvider
+    ? "当前仅需填写豆包 Ark API 密钥；切到其他供应商时再填写对应密钥。"
+    : isOpenRouterProvider
+      ? "当前仅需填写 OpenRouter API 密钥；豆包 Ark API 密钥可留空。"
+      : "当前仅需填写模型服务 API 密钥；豆包 Ark API 密钥可留空。";
 
   const draftingProgressItems = nextSteps
     .filter((item) => String(item.sub_chapter_id || "").trim())
@@ -958,6 +1302,30 @@ function App() {
       const current = !done && Boolean(currentSubId) && subId === currentSubId;
       return { subId, title, order, done, current };
     });
+  const draftingDoneCount = draftingProgressItems.filter((item) => item.done).length;
+  const draftingTotalCount = draftingProgressItems.length;
+  const draftingProgressPercent =
+    draftingTotalCount > 0 ? Math.round((draftingDoneCount / draftingTotalCount) * 100) : 0;
+  const workflowMetrics = asRecord(stateSnapshot?.workflow_metrics);
+  const workflowMetricSteps = asRecord(workflowMetrics?.steps);
+  const draftingStepKeys = ["node_planner", "node_chapter_header", "node_chapter_opening", "node_writer"];
+  const draftingElapsedSeconds = draftingStepKeys.reduce((sum, stepKey) => {
+    const row = asRecord(workflowMetricSteps?.[stepKey]);
+    return sum + Number(row?.total_seconds || 0);
+  }, 0);
+  const draftingRemainingCount = Math.max(0, draftingTotalCount - draftingDoneCount);
+  const draftingAvgSecondsPerSection = draftingDoneCount > 0 ? draftingElapsedSeconds / draftingDoneCount : 0;
+  const draftingEtaSeconds =
+    draftingRemainingCount > 0 && draftingAvgSecondsPerSection > 0
+      ? draftingAvgSecondsPerSection * draftingRemainingCount
+      : 0;
+  const draftingElapsedLabel = formatDurationSeconds(draftingElapsedSeconds);
+  const draftingEtaLabel =
+    draftingRemainingCount <= 0
+      ? "00m 00s"
+      : draftingEtaSeconds > 0
+        ? formatDurationSeconds(draftingEtaSeconds)
+        : "样本不足";
 
   const rewriteProgressItems = majorReviewItems
     .map((item, idx) => {
@@ -995,11 +1363,74 @@ function App() {
       current: boolean;
     } => item !== null)
     .sort((a, b) => a.subId.localeCompare(b.subId, undefined, { numeric: true, sensitivity: "base" }));
+  const rewriteDoneCount = rewriteProgressItems.filter((item) => item.done).length;
 
   const tokenUsage = stateSnapshot?.token_usage || {};
-  const totalInputTokens = Number(tokenUsage.total_input_tokens || 0);
-  const totalOutputTokens = Number(tokenUsage.total_output_tokens || 0);
-  const totalTokens = totalInputTokens + totalOutputTokens;
+  const inputTokens = Number(tokenUsage.total_input_tokens || 0);
+  const outputTokens = Number(tokenUsage.total_output_tokens || 0);
+  const currentYear = new Date().getFullYear();
+  const inputValidation = validateInputsForm(inputsForm);
+  const hasBlockingInputIssues = inputValidation.blockingIssues.length > 0;
+  const firstBlockingInputIssue = inputValidation.blockingIssues[0] || "";
+  const outputSearchKeyword = outputSearchQuery.trim().toLowerCase();
+  const filteredPaperOutputs = paperOutputs.filter((row) => {
+    if (!outputSearchKeyword) {
+      return true;
+    }
+    const haystack = [
+      String(row.major_title || ""),
+      String(row.title || ""),
+      String(row.sub_chapter_id || ""),
+      String(row.content || ""),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(outputSearchKeyword);
+  });
+  const pipelineArtifactTotal =
+    searchQueries.length + architectOutline.length + plannerOutputs.length + overallPlans.length + majorReviewItems.length;
+  const pendingActionLabel = ACTION_LABELS[pendingAction] || pendingAction || "无";
+  const completedSectionCount = Number(stateSnapshot?.completed_section_count ?? 0);
+  const draftingTotalDisplay = draftingTotalCount > 0 ? draftingTotalCount : "-";
+  const tutorialStep = TUTORIAL_STEPS[Math.max(0, Math.min(tutorialStepIndex, TUTORIAL_STEPS.length - 1))];
+  const isLastTutorialStep = tutorialStepIndex >= TUTORIAL_STEPS.length - 1;
+  const tutorialHighlights = String(tutorialStep?.body || "")
+    .split(/[。！？]/)
+    .map((item) => item.trim())
+    .filter((item) => Boolean(item));
+  const inputChecklist = [
+    {
+      key: "topic",
+      label: "论文标题",
+      ready: true,
+      hint: String(inputsForm.topic || "").trim()
+        ? "已填写，将优先使用当前标题"
+        : "可留空，系统会自动生成并补全标题",
+    },
+    {
+      key: "model",
+      label: "模型名称",
+      ready: Boolean(String(inputsForm.model || "").trim()),
+      hint: "需与供应商和密钥匹配",
+    },
+    {
+      key: "paper_search_limit",
+      label: "检索数量",
+      ready: Number(inputsForm.paper_search_limit) >= 1 && Number(inputsForm.paper_search_limit) <= 300,
+      hint: "按需填写即可，系统支持较大的检索数量",
+    },
+    ...(inputsForm.model_provider === "base_url"
+      ? [
+          {
+            key: "base_url",
+            label: "服务地址格式",
+            ready: !String(inputsForm.base_url || "").trim() || isValidHttpUrl(inputsForm.base_url),
+            hint: "使用自定义服务时建议填写有效 URL",
+          },
+        ]
+      : []),
+  ];
+  const readyChecklistCount = inputChecklist.filter((item) => item.ready).length;
 
   let phaseMinor = "等待流程节点";
   if (pendingAction) {
@@ -1010,6 +1441,11 @@ function App() {
   if (currentSubId) {
     phaseMinor = `${phaseMinor} / ${currentSubId}`;
   }
+  const autoSaveStatusClass = autoSaveHint.includes("失败")
+    ? "is-error"
+    : autoSaveHint.includes("保存中")
+      ? "is-saving"
+      : "is-ok";
 
   const resolveStepStatus = (idx: number): "done" | "current" | "todo" => {
     if (flowKey === "done" || idx < flowIndex) {
@@ -1040,32 +1476,32 @@ function App() {
   }, [pushNotice, stateSnapshot?.pending_action, stateSnapshot?.pending_action_message]);
 
   useEffect(() => {
-    if (!autoConfirmActions) {
-      autoConfirmBusyRef.current = false;
-      lastAutoConfirmKeyRef.current = "";
+    if (!skipApprovalEnabled) {
+      skipApprovalBusyRef.current = false;
+      lastSkipApprovalKeyRef.current = "";
       return;
     }
 
     const action = String(pendingAction || "").trim();
     if (!action) {
-      autoConfirmBusyRef.current = false;
+      skipApprovalBusyRef.current = false;
       return;
     }
 
     const actionKey = `${action}|${stateSnapshot?.runtime_time || ""}|${stateSnapshot?.checkpoint_mtime || ""}`;
-    if (autoConfirmBusyRef.current || lastAutoConfirmKeyRef.current === actionKey) {
+    if (skipApprovalBusyRef.current || lastSkipApprovalKeyRef.current === actionKey) {
       return;
     }
 
-    lastAutoConfirmKeyRef.current = actionKey;
+    lastSkipApprovalKeyRef.current = actionKey;
 
-    const runAutoAction = async () => {
-      autoConfirmBusyRef.current = true;
+    const runSkipApproval = async () => {
+      skipApprovalBusyRef.current = true;
       try {
         if (action === "confirm_inputs_ready") {
           const ok = await persistInputsForm(true);
           if (!ok) {
-            pushNotice("error", "自动确认失败：inputs 保存失败");
+            pushNotice("error", "跳过审批失败：inputs 保存失败");
             return;
           }
           await sendAction({ action: "confirm_inputs_ready" });
@@ -1105,14 +1541,14 @@ function App() {
           await sendAction({ action: "confirm_next_review_round", continue: true });
         }
       } finally {
-        autoConfirmBusyRef.current = false;
+        skipApprovalBusyRef.current = false;
       }
     };
 
-    pushNotice("info", `自动确认：${ACTION_LABELS[action] || action}`);
-    void runAutoAction();
+    pushNotice("info", `跳过审批：${ACTION_LABELS[action] || action}`);
+    void runSkipApproval();
   }, [
-    autoConfirmActions,
+    skipApprovalEnabled,
     pendingAction,
     persistInputsForm,
     pushNotice,
@@ -1123,10 +1559,25 @@ function App() {
 
   const actionControl = (
     <div className="action-zone">
+      <div className={pendingAction ? "workflow-alert pending" : "workflow-alert calm"}>
+        <strong>{pendingAction ? "需要优先处理人工动作" : "当前流程可继续推进"}</strong>
+        <span>
+          {pendingAction
+            ? `${pendingActionLabel}：${stateSnapshot?.pending_action_message || "请先完成该动作后继续。"}`
+            : "当前无阻塞动作，可结合流程视图继续推进。"}
+        </span>
+      </div>
+
+      <div className="action-block">
+        <p>全局运行控制已移至页面顶部，可在任意页面点击“暂停/继续流程”和“跳过审批”。</p>
+        <div className="line"><span>当前全局模式:</span> {skipApprovalEnabled ? "跳过审批已开启" : "跳过审批未开启"}</div>
+      </div>
+
       {!pendingAction && flowKey === "preparation" && (
         <div className="action-block">
           <p>当前处于准备阶段，可手动开始工作流。</p>
-          <button className="btn major" onClick={saveInputsAndStart}>开始工作流</button>
+          <button className="btn major" disabled={hasBlockingInputIssues} onClick={saveInputsAndStart}>开始工作流</button>
+          {hasBlockingInputIssues && <small className="field-error">开始前请先修复输入参数：{firstBlockingInputIssue}</small>}
         </div>
       )}
 
@@ -1139,7 +1590,8 @@ function App() {
       {pendingAction === "confirm_inputs_ready" && (
         <div className="action-block">
           <p>请先保存 inputs.json，再点击保存并开始。</p>
-          <button className="btn major" onClick={saveInputsAndStart}>保存并开始</button>
+          <button className="btn major" disabled={hasBlockingInputIssues} onClick={saveInputsAndStart}>保存并开始</button>
+          {hasBlockingInputIssues && <small className="field-error">请先在“输入”页修复参数问题。</small>}
         </div>
       )}
 
@@ -1184,27 +1636,31 @@ function App() {
       {pendingAction === "enter_reviewing" && (
         <div className="action-block">
           <p>确认进入审稿阶段。</p>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={loadRequirements}
-              onChange={(e) => setLoadRequirements(e.target.checked)}
-            />
-            加载自定义要求文件
-          </label>
-          <button
-            className="btn major"
-            onClick={() =>
-              sendAction({
-                action: "enter_reviewing",
-                load_requirements: loadRequirements,
+          <p className="section-help">默认会加载写作要求文件。若需补充审稿改写，请先点击“输入自定义要求”。</p>
+          <div className="action-buttons">
+            <button
+              className="btn"
+              onClick={() => {
+                setPage("inputs");
+                void loadSelectedFile("inputs/revision_requests.md");
+              }}
+            >
+              输入自定义要求
+            </button>
+            <button
+              className="btn major"
+              onClick={() =>
+                sendAction({
+                  action: "enter_reviewing",
+                  load_requirements: true,
                   requirements_path: "inputs/write_requests.md",
                   manual_revision_path: "inputs/revision_requests.md",
-              })
-            }
-          >
-            确认进入审稿
-          </button>
+                })
+              }
+            >
+              确认进入审稿
+            </button>
+          </div>
         </div>
       )}
 
@@ -1248,23 +1704,58 @@ function App() {
         </div>
       )}
 
-      <aside className="sidebar panel">
+      {tutorialOpen && tutorialStep && (
+        <div className="tutorial-overlay" role="dialog" aria-modal="true" aria-label="使用教程" onClick={() => closeTutorial(true)}>
+          <div className={`tutorial-popover ${tutorialStep.position}`} onClick={(event) => event.stopPropagation()}>
+            <div className="tutorial-head">
+              <div className="tutorial-step-meta">
+                教程 {tutorialStepIndex + 1}/{TUTORIAL_STEPS.length}
+              </div>
+              <button className="tutorial-close-btn" onClick={() => closeTutorial(true)} aria-label="关闭教程">×</button>
+            </div>
+            <h3>{tutorialStep.title}</h3>
+            <p>{tutorialStep.body}</p>
+            <div className="tutorial-progress-track" aria-hidden="true">
+              <span className={`tutorial-progress-fill step-${tutorialStepIndex + 1}`} />
+            </div>
+            {tutorialHighlights.length > 0 && (
+              <div className="tutorial-highlights">
+                {tutorialHighlights.map((item, idx) => (
+                  <div key={`${tutorialStep.key}-tip-${idx}`} className="tutorial-highlight-item">{item}</div>
+                ))}
+              </div>
+            )}
+            <div className="line"><span>当前引导页:</span> {PAGE_LABELS[tutorialStep.page]}</div>
+            <div className="tutorial-shortcuts">快捷键：← 上一步，→ 下一步，Esc 跳过</div>
+            <div className="action-buttons">
+              <button className="btn" disabled={tutorialStepIndex === 0} onClick={prevTutorialStep}>上一步</button>
+              <button className="btn major" onClick={nextTutorialStep}>{isLastTutorialStep ? "完成" : "下一步"}</button>
+              <button className="btn" onClick={() => closeTutorial(true)}>本次不再显示</button>
+              <button className="btn" onClick={() => closeTutorial(true)}>跳过教程</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <aside className="sidebar">
         <div className="brand">
-          <h1>ThesisLoom</h1>
+          <img className="brand-logo" src="/thesisloom.png" alt="ThesisLoom" />
           <p>Desktop Console</p>
         </div>
 
         <nav className="nav-list">
           <button className={page === "projects" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("projects")}>项目</button>
           <button className={page === "inputs" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("inputs")}>输入</button>
-          <button className={page === "outputs" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("outputs")}>输出</button>
           <button className={page === "workflow" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("workflow")}>流程</button>
+          <button className={page === "outputs" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("outputs")}>输出</button>
+          <button className={page === "about" ? "nav-btn active" : "nav-btn"} onClick={() => setPage("about")}>关于</button>
         </nav>
 
         <div className="sidebar-meta">
           <div className="line"><span>当前项目:</span> {stateSnapshot?.project_name || "-"}</div>
           <div className="line"><span>当前阶段:</span> {phaseMajor}</div>
-          <div className="line"><span>Tokens 使用量:</span> {totalTokens.toLocaleString()}</div>
+          <div className="line"><span>Tokens(in):</span> {inputTokens.toLocaleString()}</div>
+          <div className="line"><span>Tokens(out):</span> {outputTokens.toLocaleString()}</div>
         </div>
       </aside>
 
@@ -1282,20 +1773,51 @@ function App() {
               <strong>{phaseMajor}</strong>
               <small>{phaseMinor}</small>
             </div>
-            <div className="top-pill"><span>运行状态</span>{runtimeStatus}</div>
+            <div className={runtimeIsRunning ? "top-pill runtime-pill is-running" : "top-pill runtime-pill"}>
+              <span>运行状态 · 运行控制</span>
+              <strong>{runtimeStatus}</strong>
+              {runtimeIsRunning
+                ? <small className="runtime-running-hint">正在运行中...</small>
+                : <small className="runtime-running-hint">{runtimeControlHint}</small>}
+            </div>
+          </section>
+
+          <section className="global-runtime-strip">
+            <div className="global-runtime-actions">
+              <button
+                className="btn major"
+                disabled={!canToggleRuntimeControl || runtimeControlBusy}
+                onClick={() => void handleRuntimeControlClick(runtimeControlAction)}
+              >
+                {runtimeControlBusy ? "提交中..." : runtimeControlText}
+              </button>
+              <button
+                className={skipApprovalEnabled ? "btn skip-approval-btn active" : "btn skip-approval-btn"}
+                onClick={() => setSkipApprovalEnabled((prev) => !prev)}
+              >
+                {skipApprovalEnabled ? "跳过审批：已开启" : "跳过审批：未开启"}
+              </button>
+            </div>
+            <small className="global-runtime-hint">{runtimeControlHint}</small>
           </section>
         </header>
+
+        <div key={page} className="page-transition">
 
         {page === "projects" && (
           <section className="panel view-panel">
             <h3>项目管理</h3>
             <div className="project-grid">
-              <label className="field field-wide">
+              <label className="field project-field">
                 <span>打开已有项目</span>
                 <select
                   title="existing projects"
                   value={selectedProjectName}
-                  onChange={(e) => setSelectedProjectName(e.target.value)}
+                  onChange={(e) => {
+                    const nextProject = e.target.value;
+                    setSelectedProjectName(nextProject);
+                    void openProjectByName(nextProject);
+                  }}
                 >
                   {projects.length === 0 && <option value="">(暂无项目)</option>}
                   {projects.map((name) => (
@@ -1303,10 +1825,12 @@ function App() {
                   ))}
                 </select>
               </label>
-              <button className="btn" onClick={openExistingProject}>打开项目</button>
-              <button className="btn" onClick={openSelectedProjectFolder}>打开项目文件夹</button>
+              <div className="project-actions">
+                <button className="btn" onClick={openSelectedProjectFolder}>打开项目文件夹</button>
+                <button className="btn danger" onClick={moveProjectToTrash}>将当前选中项目移至回收站</button>
+              </div>
 
-              <label className="field field-wide">
+              <label className="field project-field">
                 <span>新建项目名称</span>
                 <input
                   title="new project name"
@@ -1315,16 +1839,21 @@ function App() {
                   onChange={(e) => setNewProjectName(e.target.value)}
                 />
               </label>
-              <button className="btn major" onClick={createAndOpenProject}>新建并打开</button>
-              <button className="btn danger" onClick={moveProjectToTrash}>移至回收站</button>
+              <div className="project-actions">
+                <button className="btn major" onClick={createAndOpenProject}>新建并打开</button>
+              </div>
             </div>
 
             <div className="project-chips">
               {projects.map((name) => (
                 <button
                   key={name}
+                  type="button"
                   className={name === selectedProjectName ? "project-chip active" : "project-chip"}
-                  onClick={() => setSelectedProjectName(name)}
+                  onClick={() => {
+                    setSelectedProjectName(name);
+                    void openProjectByName(name);
+                  }}
                 >
                   {name}
                 </button>
@@ -1335,204 +1864,226 @@ function App() {
 
         {page === "inputs" && (
           <section className="panel view-panel">
-            <h3>写作参数设置（面向非技术用户）</h3>
-            <p className="section-help">带 * 的字段为必填项。填写后点击“立即保存参数”，系统会自动更新状态。</p>
-            <div className="form-grid">
-              <label className="field field-wide">
-                <span>论文标题 *</span>
-                <textarea
-                  className="topic-textarea"
-                  title="topic"
-                  placeholder="请输入论文主题"
-                  value={inputsForm.topic}
-                  onChange={(e) => updateForm("topic", e.target.value)}
-                />
-                <small className="field-help">建议写清研究对象、方法方向与预期目标，便于系统生成更准确的大纲与正文。</small>
-              </label>
+            <h3>写作参数设置</h3>
+            <p className="section-help">带 * 的字段为必填项。论文标题可留空，流程会自动补全。API 密钥按当前供应商只需填写一项，填写后点击“立即保存参数”，系统会自动更新状态。</p>
+            <div
+              className={
+                hasBlockingInputIssues
+                  ? "validation-banner danger"
+                  : inputValidation.warnings.length > 0
+                    ? "validation-banner warn"
+                    : "validation-banner ok"
+              }
+            >
+              <span className="validation-pill">参数校验</span>
+              <strong>
+                {hasBlockingInputIssues
+                  ? `发现 ${inputValidation.blockingIssues.length} 项必修问题`
+                  : inputValidation.warnings.length > 0
+                    ? `发现 ${inputValidation.warnings.length} 条提示`
+                    : "参数格式检查通过"}
+              </strong>
+              <small>
+                {hasBlockingInputIssues
+                  ? "修复红色错误后再启动流程。"
+                  : inputValidation.warnings[0] || "可以继续保存参数并启动流程。"}
+              </small>
+            </div>
 
-              <label className="field">
-                <span>写作语言 *</span>
-                <select
-                  title="language"
-                  value={inputsForm.language}
-                  onChange={(e) => updateForm("language", e.target.value === "Chinese" ? "Chinese" : "English")}
-                >
-                  <option value="English">English</option>
-                  <option value="Chinese">Chinese</option>
-                </select>
-                <small className="field-help">选择你希望论文最终输出的语言。</small>
-              </label>
+            {inputValidation.warnings.length > 1 && !hasBlockingInputIssues && (
+              <div className="validation-list">
+                {inputValidation.warnings.slice(1).map((item, idx) => (
+                  <div key={`input-warning-${idx}`} className="validation-item">{item}</div>
+                ))}
+              </div>
+            )}
 
-              <label className="field">
-                <span>使用模型名称 *</span>
-                <input
-                  title="model"
-                  placeholder="模型名称"
-                  value={inputsForm.model}
-                  onChange={(e) => updateForm("model", e.target.value)}
-                />
-                <small className="field-help">例如：doubao-seed-2-0-pro-250415。与后面的 API 密钥和服务地址对应。</small>
-              </label>
+            <div className="input-checklist-head">
+              <strong>参数完成度</strong>
+              <small>{readyChecklistCount}/{inputChecklist.length} 项通过</small>
+            </div>
+            <div className="input-checklist-grid">
+              {inputChecklist.map((item) => (
+                <article key={item.key} className={item.ready ? "input-check-item ready" : "input-check-item pending"}>
+                  <span>{item.label}</span>
+                  <strong>{item.ready ? "已就绪" : "待完善"}</strong>
+                  <small>{item.hint}</small>
+                </article>
+              ))}
+            </div>
 
-              <label className="field">
-                <span>模型供应商 *</span>
-                <select
-                  title="model_provider"
-                  value={inputsForm.model_provider}
-                  onChange={(e) => {
-                    const value = e.target.value === "doubao"
-                      ? "doubao"
-                      : e.target.value === "openrouter"
-                        ? "openrouter"
-                        : "base_url";
-                    updateForm("model_provider", value);
-                    if (value === "openrouter" && !String(inputsForm.base_url || "").trim()) {
-                      updateForm("base_url", "https://openrouter.ai/api/v1");
-                    }
-                  }}
-                >
-                  <option value="base_url">自定义 Base URL</option>
-                  <option value="doubao">豆包 Ark</option>
-                  <option value="openrouter">OpenRouter</option>
-                </select>
-                <small className="field-help">用于决定请求路由：自定义地址、豆包官方通道或 OpenRouter。</small>
-              </label>
+            <div className="settings-groups">
+              <section className="settings-group">
+                <h4>写作设置</h4>
+                <div className="form-grid">
+                  <label className={inputValidation.fieldErrors.topic ? "field field-wide has-error" : "field field-wide"}>
+                    <span>论文标题（可选）</span>
+                    <textarea
+                      className={inputValidation.fieldErrors.topic ? "topic-textarea input-invalid" : "topic-textarea"}
+                      title="topic"
+                      placeholder="请输入论文主题"
+                      value={inputsForm.topic}
+                      onChange={(e) => updateForm("topic", e.target.value)}
+                    />
+                    {inputValidation.fieldErrors.topic && <small className="field-error">{inputValidation.fieldErrors.topic}</small>}
+                    <small className="field-help">可留空自动生成；若手动填写，建议写清研究对象、方法方向与预期目标。</small>
+                  </label>
 
-              <label className="field">
-                <span>最多审稿轮次 *</span>
-                <input
-                  title="max_review_rounds"
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={inputsForm.max_review_rounds}
-                  onChange={(e) => updateForm("max_review_rounds", toNumber(e.target.value, inputsForm.max_review_rounds, 1, 20))}
-                />
-                <small className="field-help">系统在“审稿与重写”阶段最多循环执行的次数。</small>
-              </label>
-
-              <label className="field">
-                <span>文献检索数量上限 *</span>
-                <input
-                  title="paper_search_limit"
-                  type="number"
-                  min={1}
-                  max={300}
-                  value={inputsForm.paper_search_limit}
-                  onChange={(e) => updateForm("paper_search_limit", toNumber(e.target.value, inputsForm.paper_search_limit, 1, 300))}
-                />
-                <small className="field-help">用于限制自动检索的文献条数，数字越大检索时间通常越长。</small>
-              </label>
-
-              <label className="field">
-                <span>
-                  OpenAlex API 密钥（可选）
-                  <a className="field-link" href="https://openalex.org/settings/api-key" target="_blank" rel="noreferrer noopener">获取链接</a>
-                </span>
-                <input
-                  title="openalex_api_key"
-                  placeholder="可为空"
-                  value={inputsForm.openalex_api_key}
-                  onChange={(e) => updateForm("openalex_api_key", e.target.value)}
-                />
-                <small className="field-help">用于文献检索加速或提高访问稳定性，不填也可运行。</small>
-              </label>
-
-              <label className="field">
-                <span>
-                  豆包 Ark API 密钥（可选）
-                  <a className="field-link" href="https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement" target="_blank" rel="noreferrer noopener">获取链接</a>
-                </span>
-                <input
-                  title="ark_api_key"
-                  placeholder="可为空"
-                  value={inputsForm.ark_api_key}
-                  onChange={(e) => updateForm("ark_api_key", e.target.value)}
-                />
-                <small className="field-help">
-                  {inputsForm.model_provider === "doubao"
-                    ? "当供应商为豆包时优先使用该密钥。"
-                    : "仅在供应商为豆包时使用该密钥。"}
-                </small>
-              </label>
-
-              <label className="field">
-                <span>模型服务地址（可选）</span>
-                <input
-                  title="base_url"
-                  placeholder={
-                    inputsForm.model_provider === "doubao"
-                      ? "豆包供应商固定使用 Ark 官方地址，无需填写"
-                      : inputsForm.model_provider === "openrouter"
-                        ? "默认 https://openrouter.ai/api/v1"
-                        : "例如 http://localhost:8000/v1"
-                  }
-                  value={inputsForm.base_url}
-                  onChange={(e) => updateForm("base_url", e.target.value)}
-                  disabled={inputsForm.model_provider === "doubao"}
-                />
-                <small className="field-help">
-                  {inputsForm.model_provider === "doubao"
-                    ? "豆包通道会自动使用 Ark 官方地址。"
-                    : inputsForm.model_provider === "openrouter"
-                      ? "可留空使用默认 OpenRouter 地址，也可改为你的兼容网关。"
-                      : "默认可留空；仅在你使用自建或代理模型服务时填写。"}
-                </small>
-              </label>
-
-              <label className="field">
-                <span>
-                  {inputsForm.model_provider === "openrouter"
-                    ? "OpenRouter API 密钥（可选）"
-                    : inputsForm.model_provider === "doubao"
-                      ? "模型服务 API 密钥（可选，豆包兜底）"
-                      : "模型服务 API 密钥（可选）"}
-                  {inputsForm.model_provider === "openrouter" && (
-                    <a
-                      className="field-link"
-                      href="https://openrouter.ai/workspaces/default/keys"
-                      target="_blank"
-                      rel="noreferrer noopener"
+                  <label className="field">
+                    <span>写作语言 <b className="required-mark">*</b></span>
+                    <select
+                      title="language"
+                      value={inputsForm.language}
+                      onChange={(e) => updateForm("language", e.target.value === "Chinese" ? "Chinese" : "English")}
                     >
-                      获取链接
-                    </a>
-                  )}
-                  {inputsForm.model_provider === "doubao" && (
-                    <a
-                      className="field-link"
-                      href="https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement"
-                      target="_blank"
-                      rel="noreferrer noopener"
+                      <option value="English">English</option>
+                      <option value="Chinese">Chinese</option>
+                    </select>
+                    <small className="field-help">选择你希望论文最终输出的语言。</small>
+                  </label>
+                </div>
+              </section>
+
+              <section className="settings-group">
+                <h4>语言模型设置</h4>
+                <div className="form-grid">
+                  <label className="field">
+                    <span>模型供应商 <b className="required-mark">*</b></span>
+                    <select
+                      title="model_provider"
+                      value={inputsForm.model_provider}
+                      onChange={(e) => {
+                        const previousProvider = inputsForm.model_provider;
+                        const value = e.target.value === "doubao"
+                          ? "doubao"
+                          : e.target.value === "openrouter"
+                            ? "openrouter"
+                            : "base_url";
+                        updateForm("model_provider", value);
+                        if (value === "doubao" && previousProvider !== "doubao") {
+                          updateForm("model", DOUBAO_DEFAULT_MODEL);
+                        }
+                        if (value === "openrouter" && !String(inputsForm.base_url || "").trim()) {
+                          updateForm("base_url", "https://openrouter.ai/api/v1");
+                        }
+                      }}
                     >
-                      获取链接
-                    </a>
+                      <option value="base_url">自定义 Base URL</option>
+                      <option value="doubao">豆包 Ark</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </select>
+                    <small className="field-help">用于决定请求路由：自定义地址、豆包官方通道或 OpenRouter。</small>
+                  </label>
+
+                  <label className={inputValidation.fieldErrors.model ? "field has-error" : "field"}>
+                    <span>使用模型名称 <b className="required-mark">*</b></span>
+                    <input
+                      className={inputValidation.fieldErrors.model ? "input-invalid" : ""}
+                      title="model"
+                      placeholder="模型名称"
+                      value={inputsForm.model}
+                      onChange={(e) => updateForm("model", e.target.value)}
+                    />
+                    {inputValidation.fieldErrors.model && <small className="field-error">{inputValidation.fieldErrors.model}</small>}
+                    <small className="field-help">例如：doubao-seed-2-0-pro-260215。与后面的 API 密钥和服务地址对应。</small>
+                  </label>
+
+                  {inputsForm.model_provider === "base_url" && (
+                    <label className={inputValidation.fieldErrors.base_url ? "field has-error" : "field"}>
+                      <span>模型服务地址（可选）</span>
+                      <input
+                        className={inputValidation.fieldErrors.base_url ? "input-invalid" : ""}
+                        title="base_url"
+                        placeholder="例如 http://localhost:8000/v1"
+                        value={inputsForm.base_url}
+                        onChange={(e) => updateForm("base_url", e.target.value)}
+                      />
+                      {inputValidation.fieldErrors.base_url && <small className="field-error">{inputValidation.fieldErrors.base_url}</small>}
+                      <small className="field-help">仅在你使用自建或代理模型服务时填写。</small>
+                    </label>
                   )}
-                </span>
-                <input
-                  title="model_api_key"
-                  placeholder={
-                    inputsForm.model_provider === "openrouter"
-                      ? "请输入 OpenRouter API Key"
-                      : inputsForm.model_provider === "doubao"
-                        ? "可为空（用作豆包 Ark Key 兜底）"
-                        : "可为空"
-                  }
-                  value={inputsForm.model_api_key}
-                  onChange={(e) => updateForm("model_api_key", e.target.value)}
-                />
-                <small className="field-help">
-                  {inputsForm.model_provider === "openrouter"
-                    ? "OpenRouter 供应商建议填写对应 API Key。"
-                    : inputsForm.model_provider === "doubao"
-                      ? "可作为豆包 Ark 密钥兜底（优先使用上方 Ark API 密钥）。"
-                      : "与“模型服务地址”配套使用；若使用默认方式可留空。"}
-                </small>
-              </label>
+
+                  <label className="field">
+                    <span>
+                      {activeApiKeyLabel}
+                      {activeApiKeyLink && (
+                        <button
+                          type="button"
+                          className="field-link-btn"
+                          onClick={() => void openExternalLink(activeApiKeyLink)}
+                        >
+                          获取链接
+                        </button>
+                      )}
+                    </span>
+                    <input
+                      title={activeApiKeyTitle}
+                      placeholder={activeApiKeyPlaceholder}
+                      value={activeApiKeyValue}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (isDoubaoProvider) {
+                          updateForm("ark_api_key", value);
+                          return;
+                        }
+                        updateForm("model_api_key", value);
+                      }}
+                    />
+                    <small className="field-help">{activeApiKeyHelp}</small>
+                  </label>
+                </div>
+              </section>
+
+              <section className="settings-group">
+                <h4>文献检索设置</h4>
+                <div className="form-grid">
+                  <label className={inputValidation.fieldErrors.paper_search_limit ? "field has-error" : "field"}>
+                    <span>文献检索数量上限 <b className="required-mark">*</b></span>
+                    <input
+                      className={inputValidation.fieldErrors.paper_search_limit ? "input-invalid" : ""}
+                      title="paper_search_limit"
+                      type="number"
+                      min={1}
+                      max={300}
+                      value={inputsForm.paper_search_limit}
+                      onChange={(e) => updateForm("paper_search_limit", toNumber(e.target.value, inputsForm.paper_search_limit, 1, 300))}
+                    />
+                    {inputValidation.fieldErrors.paper_search_limit && (
+                      <small className="field-error">{inputValidation.fieldErrors.paper_search_limit}</small>
+                    )}
+                    <small className="field-help">用于限制自动检索的文献条数，数字越大检索时间通常越长。</small>
+                  </label>
+
+                  <label className="field">
+                    <span>
+                      OpenAlex API 密钥（可选）
+                      <button
+                        type="button"
+                        className="field-link-btn"
+                        onClick={() => void openExternalLink("https://openalex.org/settings/api-key")}
+                      >
+                        获取链接
+                      </button>
+                    </span>
+                    <input
+                      title="openalex_api_key"
+                      placeholder="可为空"
+                      value={inputsForm.openalex_api_key}
+                      onChange={(e) => updateForm("openalex_api_key", e.target.value)}
+                    />
+                    <small className="field-help">用于文献检索加速或提高访问稳定性，不填也可运行。</small>
+                  </label>
+                </div>
+              </section>
             </div>
 
             <div className="action-buttons">
               <button className="btn" onClick={refreshInputs}>重新加载参数</button>
               <button className="btn major" onClick={() => void persistInputsForm(false)}>立即保存参数</button>
+            </div>
+            <div className={`autosave-indicator ${autoSaveStatusClass}`}>
+              <span className="autosave-dot" />
+              <span>{autoSaveHint}</span>
             </div>
 
             <h3>输入资料文件（可直接编辑）</h3>
@@ -1569,22 +2120,92 @@ function App() {
 
         {page === "outputs" && (
           <section className="panel view-panel">
-            <h3>结果查看（只读）</h3>
+            <div className="section-title-row">
+              <h3>结果查看（只读）</h3>
+              <div className="status-chip-row">
+                <span className="status-chip neutral">正文 {paperOutputs.length} 节</span>
+                <span className="status-chip neutral">过程产物 {pipelineArtifactTotal} 条</span>
+              </div>
+            </div>
             <p className="section-help">左侧查看正文内容，右侧查看系统过程产物（检索、规划与审稿建议）。</p>
+
+            <div className="outputs-overview-grid">
+              <article className="output-stat-card">
+                <span>正文章节</span>
+                <strong>{paperOutputs.length}</strong>
+                <small>可展开查看完整正文内容</small>
+              </article>
+              <article className="output-stat-card">
+                <span>检索关键词</span>
+                <strong>{searchQueries.length}</strong>
+                <small>用于文献检索与研究空白分析</small>
+              </article>
+              <article className="output-stat-card">
+                <span>审稿/改写项</span>
+                <strong>{overallPlans.length + majorReviewItems.length}</strong>
+                <small>包含总体计划与分章节审稿建议</small>
+              </article>
+            </div>
+
             <div className="tab-head">
               <button className={outputTab === "paper" ? "tab active" : "tab"} onClick={() => setOutputTab("paper")}>正文结果</button>
               <button className={outputTab === "pipeline" ? "tab active" : "tab"} onClick={() => setOutputTab("pipeline")}>过程产物</button>
             </div>
 
+            <div className="output-head-tools">
+              {outputTab === "paper" && (
+                <button className="btn" onClick={togglePaperExpandAll}>
+                  {paperExpandAll ? "恢复手动折叠" : "正文全部展开"}
+                </button>
+              )}
+              {outputTab === "pipeline" && (
+                <button className="btn" onClick={togglePipelineExpandAll}>
+                  {pipelineExpandAll ? "恢复精简视图" : "过程产物全部展开"}
+                </button>
+              )}
+            </div>
+
             {outputTab === "paper" && (
               <div className="output-pane">
+                <div className="output-tools">
+                  <label className="field field-wide output-filter-field">
+                    <span>正文关键词筛选</span>
+                    <input
+                      title="paper output keyword filter"
+                      placeholder="按章节名、子章节编号或正文内容筛选"
+                      value={outputSearchQuery}
+                      onChange={(e) => setOutputSearchQuery(e.target.value)}
+                    />
+                  </label>
+                  {outputSearchQuery.trim() && (
+                    <button className="btn" onClick={() => setOutputSearchQuery("")}>清空筛选</button>
+                  )}
+                </div>
+
+                <div className="line"><span>展示结果:</span> {filteredPaperOutputs.length}/{paperOutputs.length} 节</div>
+
                 {paperOutputs.length === 0 && <div className="empty-tip">当前还没有正文输出。</div>}
-                {paperOutputs.map((row, idx) => {
-                  const label = `第 ${row.actual_order_index ?? idx} 节 | ${row.major_title || "未命名章节"} | ${row.title || row.sub_chapter_id || "未命名小节"}`;
+                {paperOutputs.length > 0 && filteredPaperOutputs.length === 0 && (
+                  <div className="empty-tip">未找到匹配“{outputSearchQuery.trim()}”的正文结果，请调整关键词。</div>
+                )}
+
+                {filteredPaperOutputs.map((row, idx) => {
+                  const label = `第 ${row.actual_order_index ?? idx + 1} 节 | ${row.major_title || "未命名章节"} | ${row.title || row.sub_chapter_id || "未命名小节"}`;
+                  const sectionText = String(row.content || "");
+                  const sectionSize = sectionText.trim().length;
+                  const sectionWordCount = sectionText.trim() ? sectionText.trim().split(/\s+/).length : 0;
                   return (
-                    <details key={`${row.sub_chapter_id || "na"}-${idx}`} className="fold-block">
+                    <details
+                      key={`${row.sub_chapter_id || "na"}-${idx}-${paperExpandToken}`}
+                      className="fold-block"
+                      open={paperExpandAll ? true : undefined}
+                    >
                       <summary>{label.trim()}</summary>
-                      <pre>{row.content || "(empty)"}</pre>
+                      <div className="fold-actions">
+                        <span className="fold-meta">字符数 {sectionSize.toLocaleString()} · 词数 {sectionWordCount.toLocaleString()}</span>
+                        <button className="btn" onClick={() => void copyTextToClipboard(sectionText, "正文片段已复制")}>复制正文</button>
+                      </div>
+                      <pre>{sectionText || "(empty)"}</pre>
                     </details>
                   );
                 })}
@@ -1593,34 +2214,178 @@ function App() {
 
             {outputTab === "pipeline" && (
               <div className="output-pane">
-                <details className="fold-block">
-                  <summary>系统生成的文献检索关键词</summary>
-                  <pre>{prettyJson(searchQueries)}</pre>
+                <details
+                  className="fold-block"
+                  key={`pipeline-search-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>系统生成的文献检索关键词（{searchQueries.length} 条）</summary>
+                  {searchQueries.length === 0 ? (
+                    <div className="empty-tip">暂无检索关键词。</div>
+                  ) : (
+                    <ol className="schema-list">
+                      {searchQueries.map((query, idx) => (
+                        <li key={`search-query-${idx}`} className="schema-item">
+                          <span className="schema-index">{idx + 1}</span>
+                          <span className="schema-main">{String(query || "").trim() || "(empty)"}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
                 </details>
 
-                <details className="fold-block">
-                  <summary>论文整体章节架构</summary>
-                  <pre>{prettyJson(architectOutline)}</pre>
+                <details
+                  className="fold-block"
+                  key={`pipeline-outline-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>论文整体章节架构（{architectOutline.length} 项）</summary>
+                  {architectOutline.length === 0 ? (
+                    <div className="empty-tip">暂无章节架构数据。</div>
+                  ) : (
+                    <div className="schema-stack">
+                      {architectOutline.map((item, idx) => {
+                        const record = asRecord(item) || {};
+                        const majorId = pickText(record, ["major_chapter_id", "id"], `${idx + 1}`);
+                        const majorTitle = pickText(record, ["major_title", "title"], "(untitled)");
+                        const majorPurpose = pickText(record, ["major_purpose", "purpose", "architecture_role"], "-");
+                        const subSections = asRecordArray(record.sub_sections);
+                        return (
+                          <article key={`outline-major-${majorId}-${idx}`} className="schema-card">
+                            <h4>{majorId}. {majorTitle}</h4>
+                            <p className="schema-subtext">{majorPurpose}</p>
+                            {subSections.length > 0 && (
+                              <ul className="schema-sub-list">
+                                {subSections.map((sub, subIdx) => {
+                                  const subId = pickText(sub, ["sub_chapter_id", "id"], `${majorId}.${subIdx + 1}`);
+                                  const subTitle = pickText(sub, ["sub_title", "title"], "(untitled)");
+                                  return (
+                                    <li key={`outline-sub-${majorId}-${subId}-${subIdx}`}>
+                                      <strong>{subId}</strong>
+                                      <span>{subTitle}</span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
                 </details>
 
-                <details className="fold-block">
-                  <summary>各章节的小节写作规划</summary>
-                  <pre>{prettyJson(plannerOutputs)}</pre>
+                <details
+                  className="fold-block"
+                  key={`pipeline-planner-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>各章节的小节写作规划（{plannerOutputs.length} 项）</summary>
+                  {plannerOutputs.length === 0 ? (
+                    <div className="empty-tip">暂无小节写作规划。</div>
+                  ) : (
+                    <div className="schema-stack">
+                      {plannerOutputs.map((item, idx) => {
+                        const record = asRecord(item) || {};
+                        const subId = pickText(record, ["sub_chapter_id", "id"], `Item-${idx + 1}`);
+                        const subTitle = pickText(record, ["sub_title", "title"], "(untitled)");
+                        const majorId = pickText(record, ["major_chapter_id"], "-");
+                        const majorTitle = pickText(record, ["major_title"], "-");
+                        const objective = pickText(
+                          record,
+                          ["writing_objective", "sub_purpose", "architecture_role", "selected_guidance_key"],
+                          "-",
+                        );
+                        const blueprints = Array.isArray(record.paragraph_blueprints) ? record.paragraph_blueprints.length : 0;
+                        return (
+                          <article key={`planner-item-${subId}-${idx}`} className="schema-card">
+                            <h4>{subId} {subTitle}</h4>
+                            <div className="schema-meta-row">
+                              <span>所属章节：{majorId} {majorTitle}</span>
+                              <span>段落规划：{blueprints} 段</span>
+                            </div>
+                            <p className="schema-subtext">{objective}</p>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
                 </details>
 
-                <details className="fold-block">
-                  <summary>全文审稿总结与改进计划</summary>
+                <details
+                  className="fold-block"
+                  key={`pipeline-overall-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>全文审稿总结与改进计划（{overallPlans.length} 条计划）</summary>
                   <div className="json-box">
                     <h4>审稿结论摘要</h4>
-                    <pre>{stateSnapshot?.overall_review_summary || "(no summary)"}</pre>
+                    <div className="schema-summary-box">{stateSnapshot?.overall_review_summary || "(no summary)"}</div>
                     <h4>改进计划清单</h4>
-                    <pre>{prettyJson(overallPlans)}</pre>
+                    {overallPlans.length === 0 ? (
+                      <div className="empty-tip">暂无改进计划。</div>
+                    ) : (
+                      <ol className="schema-list">
+                        {overallPlans.map((item, idx) => {
+                          const record = asRecord(item) || {};
+                          const title = pickText(record, ["major_title", "title", "target", "focus"], `计划 ${idx + 1}`);
+                          const action = pickText(record, ["action", "revision_goal", "instruction", "rewrite_guidance"], "-");
+                          const priority = pickText(record, ["priority"], "medium");
+                          return (
+                            <li key={`overall-plan-${idx}`} className="schema-item">
+                              <span className="schema-index">{idx + 1}</span>
+                              <div className="schema-main-block">
+                                <div className="schema-main">{title}</div>
+                                <div className="schema-subtext">{action}</div>
+                                <div className="schema-meta-row"><span className="tag-chip">优先级：{priority}</span></div>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    )}
                   </div>
                 </details>
 
-                <details className="fold-block">
-                  <summary>分章节审稿意见</summary>
-                  <pre>{prettyJson(majorReviewItems)}</pre>
+                <details
+                  className="fold-block"
+                  key={`pipeline-major-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>分章节审稿意见（{majorReviewItems.length} 条）</summary>
+                  {majorReviewItems.length === 0 ? (
+                    <div className="empty-tip">暂无分章节审稿意见。</div>
+                  ) : (
+                    <div className="schema-stack">
+                      {majorReviewItems.map((item, idx) => {
+                        const record = asRecord(item) || {};
+                        const subId = pickText(record, ["sub_chapter_id", "id"], `${idx + 1}`);
+                        const title = pickText(record, ["title", "sub_title"], "(untitled)");
+                        const priority = pickText(record, ["priority"], "medium");
+                        const itemType = pickText(record, ["item_type"], "text");
+                        const issues = issueListFromValue(record.issues);
+                        return (
+                          <article key={`major-review-${subId}-${idx}`} className="schema-card">
+                            <h4>{subId} {title}</h4>
+                            <div className="schema-meta-row">
+                              <span className="tag-chip">类型：{itemType}</span>
+                              <span className="tag-chip">优先级：{priority}</span>
+                              <span className="tag-chip">问题数：{issues.length}</span>
+                            </div>
+                            {issues.length > 0 && (
+                              <ul className="schema-sub-list">
+                                {issues.map((issue, issueIdx) => (
+                                  <li key={`major-review-issue-${subId}-${issueIdx}`}>
+                                    <span>{issue}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
                 </details>
               </div>
             )}
@@ -1629,18 +2394,48 @@ function App() {
 
         {page === "workflow" && (
           <section className="panel view-panel workflow-grid">
+            <section className="workflow-overview-grid">
+              <article className={pendingAction ? "workflow-kpi-card danger" : "workflow-kpi-card ok"}>
+                <span>待处理动作</span>
+                <strong>{pendingActionLabel}</strong>
+                <small>
+                  {stateSnapshot?.pending_action_message || (pendingAction ? "请先完成该动作后继续流程。" : "当前没有阻塞动作。")}
+                </small>
+              </article>
+
+              <article className="workflow-kpi-card">
+                <span>当前阶段</span>
+                <strong>{phaseMajor}</strong>
+                <small>{phaseMinor}</small>
+              </article>
+
+              <article className="workflow-kpi-card">
+                <span>进度概览</span>
+                <strong>{completedSectionCount}/{draftingTotalDisplay} 小节</strong>
+                <small>
+                  审稿轮次 {reviewRoundTag || reviewRound} · 已完成改写 {rewriteDoneCount}/{rewriteProgressItems.length}
+                </small>
+              </article>
+            </section>
+
+            {reviewRoundTag && (
+              <div className="workflow-round-banner">
+                当前处于 {reviewRoundTag}，审稿相关步骤会自动标注轮次。
+              </div>
+            )}
+
             <section className="panel-block">
-              <h3>动作控制</h3>
-              <div className="line"><span>待处理动作:</span> {ACTION_LABELS[pendingAction] || pendingAction || "无"}</div>
+              <div className="section-title-row">
+                <h3>动作控制</h3>
+                <div className="status-chip-row">
+                  <span className={skipApprovalEnabled ? "status-chip ok" : "status-chip neutral"}>
+                    跳过审批：{skipApprovalEnabled ? "开启" : "关闭"}
+                  </span>
+                </div>
+              </div>
+              <div className="line"><span>待处理动作:</span> {pendingActionLabel}</div>
               <div className="line"><span>动作提示:</span> {stateSnapshot?.pending_action_message || "-"}</div>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={autoConfirmActions}
-                  onChange={(e) => setAutoConfirmActions(e.target.checked)}
-                />
-                自动确认待处理动作（默认继续流程）
-              </label>
+              <div className="line"><span>跳过审批:</span> {skipApprovalEnabled ? "已开启" : "未开启"}</div>
               {actionControl}
             </section>
 
@@ -1649,10 +2444,11 @@ function App() {
               <div className="phase-track">
                 {FLOW_STEPS.map((step, idx) => {
                   const status = resolveStepStatus(idx);
+                  const displayTitle = isReviewFlowStep(step.key) && reviewRoundTag ? `${step.title}${reviewRoundTag}` : step.title;
                   return (
                     <div key={`${step.key}-track`} className={`phase-track-item ${status}`}>
                       <div className="phase-track-dot" />
-                      <span>{step.title}</span>
+                      <span>{displayTitle}</span>
                       {idx < FLOW_STEPS.length - 1 && <i className={status === "done" ? "phase-track-line done" : "phase-track-line"} />}
                     </div>
                   );
@@ -1661,12 +2457,13 @@ function App() {
               <div className="flow-list">
                 {FLOW_STEPS.map((step, idx) => {
                   const status = resolveStepStatus(idx);
+                  const displayTitle = isReviewFlowStep(step.key) && reviewRoundTag ? `${step.title}${reviewRoundTag}` : step.title;
                   return (
                     <div key={step.key} className={`flow-item ${status}`}>
                       <div className="marker">{status === "done" ? "✓" : status === "current" ? "▶" : "○"}</div>
                       <div>
                         <div className="flow-title-row">
-                          <strong>{step.title}</strong>
+                          <strong>{displayTitle}</strong>
                           <span>{getFlowStatusLabel(status)}</span>
                         </div>
                         <p>{step.desc}</p>
@@ -1675,7 +2472,13 @@ function App() {
                           <div className="drafting-progress-inline">
                             <div className="drafting-progress-head">
                               <strong>小节写作进度</strong>
-                              <small>{nextStepsUpdatedAt || "-"}</small>
+                              <div className="mini-progress-wrap">
+                                <small>{nextStepsUpdatedAt || "-"}</small>
+                                <progress className="mini-progress" value={draftingProgressPercent} max={100} />
+                                <small>{draftingDoneCount}/{draftingTotalCount} ({draftingProgressPercent}%)</small>
+                                <small>实际写作耗时 {draftingElapsedLabel}</small>
+                                <small>预计剩余 {draftingEtaLabel}</small>
+                              </div>
                             </div>
                             <div className="drafting-progress-list">
                               {draftingProgressItems.map((item, itemIdx) => (
@@ -1734,9 +2537,8 @@ function App() {
               </div>
               <div className="line"><span>当前节点:</span> {currentNode || "-"}</div>
               <div className="line"><span>当前子步骤:</span> {phaseMinor}</div>
-              <div className="line"><span>审稿轮次:</span> {(stateSnapshot?.review_round ?? 0)} / {(stateSnapshot?.max_review_rounds ?? 0)}</div>
+              <div className="line"><span>审稿轮次:</span> {(stateSnapshot?.review_round ?? 0)}</div>
               <div className="line"><span>完成小节:</span> {stateSnapshot?.completed_section_count ?? 0} | 待改写 {stateSnapshot?.pending_rewrite_count ?? 0}</div>
-
             </section>
 
             <section className="panel-block">
@@ -1752,7 +2554,7 @@ function App() {
                     <strong>关键节点</strong>
                     <small>{keyMilestones.length} 项</small>
                   </div>
-                  <div className="drafting-progress-list">
+                  <div className="drafting-progress-list milestone-grid">
                     {keyMilestones.map((item, idx) => (
                       <div key={`${item.tag || "milestone"}-${idx}`} className="drafting-progress-item done">
                         <strong>{item.label || item.tag || "关键节点"}</strong>
@@ -1768,7 +2570,7 @@ function App() {
                   <strong>版本快照</strong>
                   <small>{versionSnapshots.length} 项</small>
                 </div>
-                <div className="drafting-progress-list">
+                <div className="drafting-progress-list milestone-grid">
                   {versionSnapshots.length === 0 && (
                     <div className="drafting-progress-item">
                       <span>暂无可回退快照。</span>
@@ -1807,6 +2609,39 @@ function App() {
             </section>
           </section>
         )}
+
+        {page === "about" && (
+          <section className="panel view-panel">
+            <h3>关于 ThesisLoom</h3>
+            <p className="section-help">论文写作全流程人机协作系统（Desktop + Local Backend）。</p>
+
+            <div className="schema-stack">
+              <article className="schema-card">
+                <h4>软件信息</h4>
+                <div className="line"><span>软件名称:</span> ThesisLoom</div>
+                <div className="line"><span>当前版本:</span> v{APP_VERSION}</div>
+                <div className="line"><span>运行模式:</span> Desktop UI + Local Backend</div>
+                <div className="action-buttons">
+                  <button className="btn" onClick={() => openTutorial(0)}>重新打开教程</button>
+                </div>
+              </article>
+
+              <article className="schema-card">
+                <h4>作者与联系方式</h4>
+                <div className="line"><span>作者:</span> 李修然</div>
+                <div className="line"><span>单位:</span> Tongji University</div>
+                <div className="line"><span>邮箱:</span> xiuran@tongji.edu.cn</div>
+              </article>
+
+              <article className="schema-card">
+                <h4>版权信息</h4>
+                <div className="line">Copyright (c) {currentYear} 李修然@Tongji University. All rights reserved.</div>
+                <div className="line">ThesisLoom 用于学术研究与论文写作流程辅助，使用时请遵守所在机构与数据合规要求。</div>
+              </article>
+            </div>
+          </section>
+        )}
+        </div>
       </main>
     </div>
   );

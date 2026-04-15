@@ -3,11 +3,10 @@
   "topic": "Graph Neural Network-Based Fault Detection for Distributed Industrial Internet of Things Production Systems",
   "language": "English",
   "model": "claude-sonnet-4-5-20250929",
-  "max_review_rounds": 3,
+  "model_provider": "doubao",
   "paper_search_limit": 30,
   "openalex_api_key": "eg2wKcU07gdO6c31i2oT7m",
   "ark_api_key": "741ebdb0-fb9e-432e-b1c4-bcb37d75ba86",
   "base_url": "https://acai-proxy-api.onrender.com/v1",
-  "model_api_key": "sk-123",
-  "auto_resume": false
+  "model_api_key": "sk-123"
 }

@@ -5,6 +5,8 @@ import re
 from datetime import datetime
 from core.project_paths import project_path, shared_input_path, get_active_project_name
 
+MAX_REVIEW_ROUNDS_SAFETY_LIMIT = 20
+
 
 def resolve_inputs_path() -> str:
     candidate_paths = [
@@ -234,11 +236,11 @@ def save_state_checkpoint(state: "PaperWriterState", checkpoint_path: str) -> No
             if isinstance(latest_inputs, dict):
                 # Update configurable params to latest values
                 for key in ["model", "language", "base_url", "model_api_key", "ark_api_key",
-                            "openalex_api_key", "paper_search_limit", "max_review_rounds"]:
+                            "openalex_api_key", "paper_search_limit"]:
                     if key in latest_inputs:
                         val = latest_inputs[key]
                         if hasattr(state, key):
-                            if key in ("paper_search_limit", "max_review_rounds"):
+                            if key == "paper_search_limit":
                                 setattr(state, key, int(val))
                             else:
                                 setattr(state, key, str(val).strip() if isinstance(val, str) else val)
@@ -454,7 +456,7 @@ class PaperWriterState:
         self.review_summary: str = inputs.get("review_summary", "")
         self.major_review_plans = inputs.get("major_review_plans", [])
         self.review_round: int = int(inputs.get("review_round", 0))
-        self.max_review_rounds: int = int(inputs.get("max_review_rounds", 3))
+        self.max_review_rounds: int = MAX_REVIEW_ROUNDS_SAFETY_LIMIT
         # 架构审查循环状态
         self.architecture_review_enabled: bool = bool(inputs.get("architecture_review_enabled", True))
         self.architecture_review_round: int = int(inputs.get("architecture_review_round", 0))

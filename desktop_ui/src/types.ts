@@ -83,6 +83,24 @@ export interface WorkflowStateSnapshot {
     total_output_tokens?: number;
     [key: string]: unknown;
   };
+  workflow_metrics?: {
+    steps?: Record<
+      string,
+      {
+        count?: number;
+        total_seconds?: number;
+        avg_seconds?: number;
+        last_seconds?: number;
+        [key: string]: unknown;
+      }
+    >;
+    totals?: {
+      step_calls?: number;
+      total_step_seconds?: number;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
   action_preferences?: Record<string, unknown>;
   action_history?: Array<Record<string, unknown>>;
 }

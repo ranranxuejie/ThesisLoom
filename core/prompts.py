@@ -32,8 +32,9 @@ ${architecture_review_feedback}
 1. Keep final major_chapter_id sequence in publication order (0,1,2,...), but writing_order reflects drafting priority.
 2. Build logically connected sub_sections under every major section, with actionable architecture_role.
 3. Bind content_anchors to measurable details from provided context (methods, variables, metrics, datasets, comparisons).
-4. Keep output language consistent with ${language} except proper nouns/standard abbreviations.
-5. No markdown fences, no commentary, no extra keys.
+4. major_title and sub_title must be pure titles, without leading numbering like "1.", "2.3".
+5. Keep output language consistent with ${language} except proper nouns/standard abbreviations.
+6. No markdown fences, no commentary, no extra keys.
 </Rules>
 
 <JSON_Schema>
@@ -263,6 +264,8 @@ Is Zero Chapter: ${is_zero_chapter}
 4. If non-zero and subsection ends with .1, keep chapter opening as "## ${major_chapter_id} ${chapter_header_title}" plus optional lead paragraph.
 5. Write only the target subsection ${sub_chapter_id} ${sub_title}; never output other subsection IDs or previous chapter headings.
 6. For chapter 0, enforce non-numbered front matter structure.
+7. If sub_chapter_id is 0.1, output title line only (no explanatory paragraph).
+8. If sub_chapter_id is 0.2, output author line(s) only (no affiliation/funding explanation).
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -271,7 +274,8 @@ Is Zero Chapter: ${is_zero_chapter}
 3. Add level-4 headings only when needed for clarity.
 4. Insert figure placeholder paragraph only if visualization is truly necessary.
 5. Keep language consistent with ${language} except standard abbreviations.
-6. No JSON output, no markdown fences, no meta-text.
+6. Never output boilerplate explanatory sentences about placeholders or publication standards.
+7. No JSON output, no markdown fences, no meta-text.
 </Rules>
 
 <Final_Target_Reminder>
@@ -280,6 +284,39 @@ ${target_reminder}
 <Final_Target_Rule>
 The first subsection heading in your output must be exactly "### ${sub_chapter_id} ${sub_title}" unless chapter 0 protocol applies.
 </Final_Target_Rule>
+""")
+
+PROMPT_ZERO_CHAPTER_WRITER_EN = Template("""
+<Role>Front-Matter Writer</Role>
+<Task>Write exactly one subsection in Chapter 0 with minimal, publication-ready front-matter format.</Task>
+
+<Context>
+Language: ${language}
+Topic: ${topic}
+Subsection ID: ${sub_chapter_id}
+Subsection Title: ${sub_title}
+User Requirements: ${user_requirements}
+Existing Materials:
+${existing_material}
+Research Gaps:
+${research_gap_all}
+</Context>
+
+<Critical_Memory_Anchors>
+1. If sub_chapter_id is 0.4, output JSON only using this schema: {"keywords": ["keyword1", "keyword2", "keyword3"]}.
+2. For non-0.4 subsections, output markdown only, no JSON, no explanations.
+3. Never output numbering prefixes like 0.1, 0.2, 0.3.
+4. If sub_chapter_id is 0.3: output exactly an abstract block with heading "## Abstract" (or "## 摘要" for Chinese) and one concise paragraph.
+5. If sub_chapter_id is 0.4: the JSON keywords value must be list[str] with 3-8 short items.
+6. Keep content concise and publication-ready; avoid placeholder-policy explanations.
+</Critical_Memory_Anchors>
+
+<Rules>
+1. Keep language aligned with ${language} except standard abbreviations.
+2. Do not write title/author blocks here (those are handled elsewhere).
+3. Do not introduce extra sections beyond the target subsection.
+4. If sub_chapter_id is 0.4, do not output markdown fences.
+</Rules>
 """)
 
 PROMPT_CHAPTER_OPENING_WRITER_EN = Template("""
@@ -490,6 +527,7 @@ ${research_gaps}
 4. Do not fabricate unsupported numeric claims.
 5. If subsection starts with 0., keep non-numbered front matter style.
 6. If subsection ID ends with .1, preserve chapter opening block format: "## n Title" followed by lead paragraph.
+7. For 0.1 and 0.2, keep output minimal and avoid explanatory boilerplate.
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -618,6 +656,7 @@ Existing Materials: ${existing_material}
 1. Output JSON object only with chapter_header_title and chapter_header_lead.
 2. Title must align with subsection structure, not slogans.
 3. Lead sentence should summarize chapter logic in 1-2 sentences.
+4. chapter_header_title must not include numeric prefixes (do not include chapter number).
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -673,6 +712,7 @@ Existing Materials: ${existing_material}
 1. Output JSON object only with chapter_header_title and chapter_header_lead.
 2. Must address review guidance directly.
 3. Lead sentence length: 1-2 sentences.
+4. chapter_header_title must be plain title text without numbering prefix.
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -687,6 +727,7 @@ PROMPT_TEMPLATE = {
         "architecture_reviewer": PROMPT_ARCHITECTURE_REVIEWER_EN,
         "planner": PROMPT_PLANNER_EN,
         "writer": PROMPT_WRITER_EN,
+      "zero_chapter_writer": PROMPT_ZERO_CHAPTER_WRITER_EN,
         "overall_reviewer": PROMPT_OVERALL_REVIEWER_EN,
         "major_reviewer": PROMPT_REVIEWER_EN,
         "rewriter": PROMPT_REWRITER_EN,

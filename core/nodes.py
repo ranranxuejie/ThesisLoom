@@ -302,6 +302,66 @@ def _dedupe_queries(queries: list[str]) -> list[str]:
     return result
 
 
+def _strip_heading_number_prefix(title: str) -> str:
+    text = str(title or "").strip()
+    if not text:
+        return ""
+
+    text = re.sub(r"^(chapter|section)\s*\d+(?:\.\d+)*\s*[:\.)\-、]\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^第\s*\d+(?:\.\d+)*\s*[章节篇部]\s*", "", text)
+    text = re.sub(r"^\d+(?:\.\d+)*\s*[:\.)\-、]\s*", "", text)
+    text = re.sub(r"^\d+(?:\.\d+)*\s+", "", text)
+    return text.strip()
+
+
+def _sanitize_title_with_id(title: str, chapter_id: str) -> str:
+    cleaned = _strip_heading_number_prefix(title)
+    cid = str(chapter_id or "").strip()
+    if cid and cleaned:
+        cleaned = re.sub(rf"^{re.escape(cid)}\s*[:\.)\-、]\s*", "", cleaned)
+        cleaned = re.sub(rf"^{re.escape(cid)}\s+", "", cleaned)
+    return cleaned.strip()
+
+
+def _sanitize_outline_titles(outline: Any) -> list[Dict[str, Any]]:
+    if not isinstance(outline, list):
+        return []
+
+    sanitized: list[Dict[str, Any]] = []
+    for major in outline:
+        if not isinstance(major, dict):
+            continue
+
+        major_copy = dict(major)
+        major_id = str(major_copy.get("major_chapter_id", "")).strip()
+        major_title_raw = str(major_copy.get("major_title", "")).strip()
+        major_title_clean = _sanitize_title_with_id(major_title_raw, major_id)
+        if major_title_clean:
+            major_copy["major_title"] = major_title_clean
+
+        chapter_header_title = str(major_copy.get("chapter_header_title", "")).strip()
+        chapter_header_clean = _sanitize_title_with_id(chapter_header_title, major_id)
+        if chapter_header_clean:
+            major_copy["chapter_header_title"] = chapter_header_clean
+
+        cleaned_sub_sections: list[Dict[str, Any]] = []
+        for sub in (major_copy.get("sub_sections", []) or []):
+            if not isinstance(sub, dict):
+                continue
+            sub_copy = dict(sub)
+            sub_id = str(sub_copy.get("sub_chapter_id", "")).strip()
+            sub_title_raw = str(sub_copy.get("sub_title", "")).strip()
+            sub_title_clean = _sanitize_title_with_id(sub_title_raw, sub_id)
+            if sub_title_clean:
+                sub_copy["sub_title"] = sub_title_clean
+            cleaned_sub_sections.append(sub_copy)
+
+        major_copy["sub_sections"] = cleaned_sub_sections
+        sanitized.append(major_copy)
+
+    return sanitized
+
+
 def _build_search_queries_with_llm(state: PaperWriterState) -> list[str]:
     prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["paper_search_query_builder"].safe_substitute(
         topic=state.topic if state.topic.strip() else "未提供",
@@ -522,7 +582,8 @@ def node_search_query_builder(state: PaperWriterState) -> PaperWriterState:
 
 
 def _build_chapter_opening_markdown(major_id: str, header_title: str, lead: str) -> str:
-    title_line = f"## {str(major_id).strip()} {str(header_title).strip()}".strip()
+    safe_header_title = _sanitize_title_with_id(header_title, major_id) or str(header_title).strip()
+    title_line = f"## {str(major_id).strip()} {safe_header_title}".strip()
     parts = [title_line, ""]
     if str(lead).strip():
         parts.extend([str(lead).strip(), ""])
@@ -563,11 +624,81 @@ def _normalize_zero_chapter_content(content: str) -> str:
         # 第0章禁止出现 0.x 编号标题，统一清洗为无编号前置信息。
         if re.match(r"^#{1,6}\s*0\.\d+", stripped):
             continue
-        if re.match(r"^0\.\d+\s+", stripped):
+        if re.match(r"^0\.\d+", stripped):
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith("this title explicitly encodes"):
+            continue
+        if lowered.startswith("standardized placeholders aligned with"):
             continue
         normalized_lines.append(line)
 
     return "\n".join(normalized_lines).strip()
+
+
+def _build_zero_chapter_minimal_block(state: PaperWriterState, sub_id: str, sub_title: str) -> str:
+    sid = str(sub_id or "").strip()
+    language = str(getattr(state, "language", "English") or "English").strip().lower()
+
+    if sid == "0.1":
+        title = str(getattr(state, "topic", "") or "").strip() or str(sub_title or "Title").strip()
+        return f"# {title}".strip()
+
+    if sid == "0.2":
+        if language == "chinese":
+            return "作者：<请填写作者姓名>"
+        return "Authors: <Fill in author names>"
+
+    return ""
+
+
+def _coerce_keywords_list(value: Any) -> list[str]:
+    parsed = _coerce_list_or_none(value)
+    if not parsed:
+        return []
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        text = re.sub(r"^[-*\d\.\)\(\s]+", "", text).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned[:8]
+
+
+def _build_keywords_block(keywords: list[str], language: str) -> str:
+    lang = str(language or "English").strip().lower()
+    heading = "## 关键词" if lang == "chinese" else "## Keywords"
+    payload = ", ".join([str(x).strip() for x in keywords if str(x).strip()])
+    if not payload:
+        payload = "keyword1, keyword2, keyword3"
+    return f"{heading}\n\nKeywords: {payload}".strip()
+
+
+def _default_zero_chapter_subsection(sub_id: str, language: str) -> str:
+    sid = str(sub_id or "").strip()
+    lang = str(language or "English").strip().lower()
+
+    if sid == "0.3":
+        heading = "## 摘要" if lang == "chinese" else "## Abstract"
+        body = "<请填写摘要内容>" if lang == "chinese" else "<Provide abstract text>"
+        return f"{heading}\n\n{body}".strip()
+
+    if sid == "0.4":
+        return _build_keywords_block(["keyword1", "keyword2", "keyword3"], language)
+
+    fallback_title = _strip_heading_number_prefix(sub_id)
+    if lang == "chinese":
+        return f"## {fallback_title or '前置信息'}\n\n<请填写内容>".strip()
+    return f"## {fallback_title or 'Front Matter'}\n\n<Provide content>".strip()
 
 
 def node_search_paper(state: PaperWriterState) -> PaperWriterState:
@@ -617,13 +748,17 @@ def node_chapter_header(state: PaperWriterState, current_major: Dict[str, Any]) 
     if major_id == "0":
         return state
 
+    major_title_clean = _sanitize_title_with_id(current_major.get("major_title", ""), major_id) or str(current_major.get("major_title", "")).strip()
+    if major_title_clean:
+        current_major["major_title"] = major_title_clean
+
     sub_sections_info = json.dumps(current_major.get("sub_sections", []), ensure_ascii=False, indent=2)
     prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["chapter_header_builder"].safe_substitute(
         topic=state.topic,
         language=state.language,
         user_requirements=getattr(state, "user_requirements", ""),
         major_chapter_id=major_id,
-        major_title=current_major.get("major_title", ""),
+        major_title=major_title_clean,
         major_purpose=current_major.get("major_purpose", ""),
         sub_sections_info=sub_sections_info,
         research_gaps=state.research_gaps if str(state.research_gaps).strip() else "暂无",
@@ -633,7 +768,9 @@ def node_chapter_header(state: PaperWriterState, current_major: Dict[str, Any]) 
     _save_llm_call_checkpoint(state, "node_chapter_header")
     data = _coerce_dict_or_none(response) or {}
 
-    title = str(data.get("chapter_header_title", "")).strip() or str(current_major.get("major_title", "")).strip()
+    title = _sanitize_title_with_id(data.get("chapter_header_title", ""), major_id)
+    if not title:
+        title = _sanitize_title_with_id(current_major.get("major_title", ""), major_id) or str(current_major.get("major_title", "")).strip()
     lead = str(data.get("chapter_header_lead", "")).strip()
 
     current_major["chapter_header_title"] = title
@@ -650,7 +787,8 @@ def node_chapter_opening(state: PaperWriterState, current_major: Dict[str, Any])
     if major_id == "0":
         return state
 
-    header_title = str(current_major.get("chapter_header_title", current_major.get("major_title", ""))).strip()
+    header_title = _sanitize_title_with_id(current_major.get("chapter_header_title", current_major.get("major_title", "")), major_id) or str(current_major.get("major_title", "")).strip()
+    current_major["chapter_header_title"] = header_title
     header_lead = str(current_major.get("chapter_header_lead", "")).strip()
     fallback_opening = _build_chapter_opening_markdown(major_id, header_title, header_lead)
 
@@ -659,7 +797,7 @@ def node_chapter_opening(state: PaperWriterState, current_major: Dict[str, Any])
         language=state.language,
         user_requirements=getattr(state, "user_requirements", ""),
         major_chapter_id=major_id,
-        major_title=current_major.get("major_title", ""),
+        major_title=_sanitize_title_with_id(current_major.get("major_title", ""), major_id) or str(current_major.get("major_title", "")).strip(),
         chapter_header_title=header_title,
         chapter_header_lead=header_lead,
         major_purpose=current_major.get("major_purpose", ""),
@@ -762,6 +900,7 @@ def node_architect(state: PaperWriterState) -> PaperWriterState:
 
     # 4. 解析结果并更新状态 (State Management)
     outline = _coerce_list_or_none(result)
+    outline = _sanitize_outline_titles(outline)
     if outline:
         # 将生成的关键信息写入 State
         state.outline = outline
@@ -875,7 +1014,8 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
     Writer Node (Sub Level): 根据 Planner 分发的蓝图，精准抽取前文 ID 对应的草稿，撰写正文并追加到线性历史记录中。
     """
     sub_id = current_sub.get('sub_chapter_id')
-    sub_title = current_sub.get('sub_title')
+    sub_title = _sanitize_title_with_id(current_sub.get('sub_title', ''), sub_id) or str(current_sub.get('sub_title', '')).strip()
+    current_sub['sub_title'] = sub_title
     print(f"| | [Node: Writer] 正在撰写正文: {sub_id} {sub_title} ...")
 
     # 1. 提取动态路由开关
@@ -897,7 +1037,11 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
     blueprints_str = json.dumps(current_sub.get("paragraph_blueprints", []), ensure_ascii=False, indent=2)
     is_zero_chapter = str(current_major.get("major_chapter_id", "")).strip() == "0" or str(sub_id).startswith("0.")
     major_id = str(current_major.get("major_chapter_id", "")).strip()
-    header_title = str(current_major.get("chapter_header_title", current_major.get("major_title", ""))).strip()
+    major_title_clean = _sanitize_title_with_id(current_major.get("major_title", ""), major_id) or str(current_major.get("major_title", "")).strip()
+    if major_title_clean:
+        current_major["major_title"] = major_title_clean
+    header_title = _sanitize_title_with_id(current_major.get("chapter_header_title", current_major.get("major_title", "")), major_id) or str(current_major.get("major_title", "")).strip()
+    current_major["chapter_header_title"] = header_title
     header_lead = str(current_major.get("chapter_header_lead", "")).strip()
     guidance_key = str(current_sub.get("selected_guidance_key", "none")).strip()
     guidance_library = getattr(state, "writing_guidance_library", {})
@@ -905,10 +1049,66 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
     if not selected_guidance:
         selected_guidance = "未指定模块写作指导建议。"
 
+    if is_zero_chapter:
+        minimal_block = _build_zero_chapter_minimal_block(state, str(sub_id), sub_title)
+        if minimal_block:
+            cleaned_draft = minimal_block
+            current_sub["draft_content"] = cleaned_draft
+
+            actual_order = len(state.completed_sections) + 1
+            state.completed_sections.append({
+                "actual_order_index": actual_order,
+                "major_title": major_title_clean,
+                "sub_chapter_id": sub_id,
+                "title": sub_title,
+                "content": cleaned_draft
+            })
+            _save_llm_call_checkpoint(state, "node_writer")
+            print(f"| | [OK] [Writer] 第0章最小块已生成: {sub_id}")
+            return state
+
+        zero_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["zero_chapter_writer"].safe_substitute(
+            language=getattr(state, "language", "English"),
+            topic=str(getattr(state, "topic", "") or "").strip(),
+            sub_chapter_id=sub_id,
+            sub_title=sub_title,
+            user_requirements=getattr(state, "user_requirements", ""),
+            existing_material=context_material,
+            research_gap_all=context_gap,
+        )
+        zero_response = _call_llm_safe(system_input=zero_prompt, thinking=False, model=state.model)
+        _save_llm_call_checkpoint(state, "node_writer")
+
+        language_value = str(getattr(state, "language", "English") or "English")
+        if str(sub_id).strip() == "0.4":
+            keywords = _coerce_keywords_list(zero_response)
+            if keywords:
+                cleaned_draft = _build_keywords_block(keywords, language_value)
+            else:
+                cleaned_draft = _default_zero_chapter_subsection(str(sub_id), language_value)
+        else:
+            cleaned_draft = "" if zero_response is None else str(zero_response).strip().removeprefix("```markdown").removeprefix("```").removesuffix("```").strip()
+            cleaned_draft = _normalize_zero_chapter_content(cleaned_draft)
+            if not cleaned_draft:
+                cleaned_draft = _default_zero_chapter_subsection(str(sub_id), language_value)
+
+        current_sub["draft_content"] = cleaned_draft
+        actual_order = len(state.completed_sections) + 1
+        state.completed_sections.append({
+            "actual_order_index": actual_order,
+            "major_title": major_title_clean,
+            "sub_chapter_id": sub_id,
+            "title": sub_title,
+            "content": cleaned_draft
+        })
+        _save_llm_call_checkpoint(state, "node_writer")
+        print(f"| | [OK] [Writer] 第0章专用提示词生成完成: {sub_id}")
+        return state
+
     # 5. 组装 Prompt
     system_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["writer"].safe_substitute(
         major_chapter_id=current_major.get("major_chapter_id", ""),
-        major_title=current_major.get("major_title", ""),
+        major_title=major_title_clean,
         chapter_header_title=header_title,
         chapter_header_lead=header_lead,
         sub_chapter_id=sub_id,
@@ -953,7 +1153,7 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
 
     state.completed_sections.append({
         "actual_order_index": actual_order,
-        "major_title": current_major.get("major_title", ""),
+        "major_title": major_title_clean,
         "sub_chapter_id": sub_id,
         "title": sub_title,
         "content": cleaned_draft

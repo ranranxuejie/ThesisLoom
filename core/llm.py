@@ -246,7 +246,7 @@ def call_llm(system_input: str,
              model: str = "gemini-3.1-pro",
              thinking: bool = True,
              max_completion_tokens: int = 2**15,
-             request_timeout: tuple[float, float] = (20.0, 240.0)) -> Any:
+             request_timeout: tuple[float, float] = (60.0, 240.0)) -> Any:
     cfg_base_url, cfg_model_api_key, cfg_ark_api_key, cfg_model_provider = _load_llm_runtime_config_from_inputs()
 
     provider_raw = str(cfg_model_provider or "").strip().lower()

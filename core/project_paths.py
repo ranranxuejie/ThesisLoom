@@ -31,7 +31,7 @@ WORKSPACE_TEMPLATE_FILES = [
 
 # Fallback templates if source files are missing.
 FALLBACK_TEMPLATES: Dict[str, str] = {
-    "inputs/inputs.json": "{\n  \"topic\": \"\",\n  \"language\": \"English\",\n  \"model\": \"gemini-3.1-pro\",\n  \"max_review_rounds\": 3,\n  \"paper_search_limit\": 30,\n  \"openalex_api_key\": \"\",\n  \"ark_api_key\": \"\",\n  \"base_url\": \"http://localhost:8000/v1\",\n  \"model_api_key\": \"\",\n  \"auto_resume\": false\n}\n",
+    "inputs/inputs.json": "{\n  \"topic\": \"\",\n  \"language\": \"English\",\n  \"model\": \"gemini-3.1-pro\",\n  \"paper_search_limit\": 30,\n  \"openalex_api_key\": \"\",\n  \"ark_api_key\": \"\",\n  \"base_url\": \"http://localhost:8000/v1\",\n  \"model_api_key\": \"\",\n  \"auto_resume\": false\n}\n",
     "inputs/existing_material.md": "# Existing Materials\n\n请在这里粘贴已有论文正文、实验记录或技术说明。\n",
     "inputs/existing_sections.md": "# Existing Sections\n\n请在这里粘贴已有章节（如摘要、引言、方法草稿）。\n",
     "inputs/related_works.md": "# Related Works\n\n请在这里补充检索后的相关工作综述。\n",

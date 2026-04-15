@@ -1,196 +1,65 @@
-﻿# ThesisLoom 使用指南（Desktop + Local Backend）
+﻿# ThesisLoom
 
-ThesisLoom 是一个论文写作工作流系统，包含：
+ThesisLoom 是一个面向论文写作的本地化人机协作系统。它不是“一次性生成全文”的黑盒工具，而是一条可观察、可暂停、可恢复、可人工决策的写作工作流。
 
-- Python 后端：流程编排、断点恢复、审稿改稿循环
-- Tauri + React 桌面端：可视化状态、动作确认、输入编辑
+本 README 面向首次接触 ThesisLoom 且只使用 release 安装包的用户。
 
-当前主链路已不再使用 Streamlit。桌面端启动时会自动拉起后端，关闭桌面端时会自动回收后端进程。
+## ThesisLoom 能做什么
 
-## 0. 项目结构总览
+1. 组织论文写作流程：从前置准备、写作到审稿改写，全流程可追踪。
+2. 支持输入大量异构资料：已有正文、笔记、相关工作、写作偏好、改稿要求都可纳入同一项目。
+3. 自动生成草稿并分节推进：按章节和小节逐步写作，避免一次性失控输出。
+4. 生成时动态决策上下文：按当前阶段和目标节点挑选最相关信息，而不是无差别拼接全文上下文。
+5. 支持人工介入关键决策：例如是否开启检索、是否进入下一轮审稿。
+6. 保留断点和过程记录：中断后可继续，不必从头重来。
+7. 支持自定义写作与修改要求：可分别配置全局写作偏好与审稿改写指令。
 
-核心目录：
+## ThesisLoom 的优势
 
-- core/: 状态定义、节点实现、模型调用与项目路径管理
-- workflow.py: 主状态机（pre_research/drafting/review_pending/reviewing）
-- backend_api.py: HTTP API 实现（桌面端唯一后端入口）
-- desktop_backend.py: 启动器（API 服务 + workflow 线程）
-- desktop_ui/: Tauri + React 前端与安装包工程
-- scripts/: 后端/桌面端打包脚本
-- projects/: 项目工作目录（输入、断点、输出、日志）
-- history/legacy_frontend/: 旧 Streamlit 历史快照（不参与主链路）
+1. 可控：关键环节由你确认，而不是全自动“跑到底”。
+2. 可恢复：基于 checkpoint 自动续跑，适合长时任务。
+3. 可观测：当前阶段、节点、待操作动作、日志都可查看。
+4. 上下文更高效：通过动态上下文选择，减少无效上下文长度，突出高价值信息。
+5. 质量更稳定：在更短上下文内保留关键信息，提高生成质量与一致性。
+6. 本地运行：数据与流程在本机执行，便于隐私与项目隔离。
 
-运行关系：
+## 适合谁使用
 
-1. Tauri 桌面端拉起 sidecar（ThesisLoomBackend）。
-2. sidecar 内启动 `desktop_backend.py`，提供 API 并运行工作流。
-3. 前端按轮询 + 动作提交驱动人机协作流程。
+1. 需要结构化推进论文写作的研究生、科研人员。
+2. 需要在自动化与人工把控之间取得平衡的写作者。
+3. 希望使用桌面安装包直接开始，而不想先搭建开发环境的用户。
 
-## 1. 快速开始
+## 工作流是什么样子（简版）
 
-### 1.1 环境准备
+主阶段为：
 
-推荐：Python 3.11+ + venv
+pre_research -> drafting -> review_pending -> reviewing -> done
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install --upgrade pip
-.\.venv\Scripts\python -m pip install -r requirements.txt
-```
+你会在界面中看到流程状态，并在关键节点点击确认后继续。
 
-### 1.2 启动桌面端（推荐）
+## 实现逻辑（简要）
 
-```powershell
-cd desktop_ui
-npm install
-npm run tauri dev
-```
+1. 桌面端启动后自动拉起本地后端。
+2. 后端同时运行 API 服务和 workflow 状态机线程。
+3. workflow 按阶段执行，并在关键节点写入 checkpoint、runtime、events。
+4. 在每个节点执行前，系统按任务目标动态选择上下文来源（已写内容、输入资料、改稿要求等），优先注入高价值信息。
+5. 前端持续读取状态；当出现 pending action 时，你在界面点选动作，后端继续执行。
+6. 暂停后会在安全节点停下，继续时从最近 checkpoint 恢复。
 
-桌面端默认连接：
+## Release 版本快速开始
 
-- 后端地址：http://127.0.0.1:8765
-- 后端入口：desktop_backend.py（由 Tauri 自动启动）
+1. 从 Releases 下载并安装 Windows 安装包（msi 或 exe）。
+2. 启动 ThesisLoom 桌面程序。
+3. 在输入页填写主题、语言、模型和密钥配置。
+4. 点击继续，按界面提示完成前置确认。
+5. 在流程页观察执行进度，并在待确认节点进行人工决策。
 
-### 1.3 仅启动后端（调试用）
+## README 与 docs 的分工
 
-```powershell
-python desktop_backend.py --host 127.0.0.1 --port 8765 --interaction web
-```
+1. README：面向新用户与 release 使用场景，只保留上手必需信息。
+2. docs：面向深入理解和开发参与，包含架构、状态机细节、构建打包等内容。
 
-兼容入口：
+推荐继续阅读：
 
-- main.py 已改为兼容代理，内部等价调用 desktop_backend.py。
-
-## 2. 工作流阶段
-
-主状态机：
-
-- pre_research -> drafting -> review_pending -> reviewing -> done
-
-关键约束：
-
-- review_pending/reviewing 仅能在正文（drafting）完整后进入。
-- 若检测到正文未完整，会自动回退到 drafting 继续写作。
-
-## 3. 输入文件与配置
-
-核心配置：
-
-- inputs/inputs.json
-
-常用输入文件：
-
-- inputs/existing_material.md（必要）
-- inputs/existing_sections.md（可选）
-- inputs/related_works.md（可选，可人工补充）
-- inputs/revision_requests.md（审稿改稿指令）
-- inputs/write_requests.md（全局写作偏好）
-
-示例配置：
-
-```json
-{
-  "topic": "",
-  "language": "English",
-  "model": "doubao-seed-2-0-pro-260215",
-  "max_review_rounds": 3,
-  "paper_search_limit": 30,
-  "openalex_api_key": "",
-  "ark_api_key": "",
-  "base_url": "",
-  "model_api_key": ""
-}
-```
-
-## 4. 断点与产物
-
-关键目录：
-
-- completed_history/*_checkpoint.json
-- completed_history/*_checkpoint_history.json
-- completed_history/workflow_state_history.json
-- completed_history/review_round_*.json
-
-常见状态字段：
-
-- workflow_phase
-- current_node
-- pending_action
-- current_major_chapter_id
-- current_sub_chapter_id
-
-## 5. 打包与发布
-
-### 5.1 一体化打包（推荐）
-
-```powershell
-./scripts/build_desktop_bundle.ps1
-```
-
-默认行为：
-
-- 打包后端 sidecar（ThesisLoomBackend）
-- 复制到 desktop_ui/src-tauri/bin
-- 构建 Tauri 桌面程序及安装包
-- 默认启用体积优化：排除可选 TLS 后端（OpenSSL/cryptography）
-
-可选参数：
-
-```powershell
-# 跳过后端重打包
-./scripts/build_desktop_bundle.ps1 -SkipBackend
-
-# 后端 onedir
-./scripts/build_desktop_bundle.ps1 -BackendMode onedir
-
-# 保留可选 TLS 后端（体积更大）
-./scripts/build_desktop_bundle.ps1 -IncludeOptionalTlsBackends
-```
-
-### 5.2 仅构建 MSI
-
-```powershell
-# 先确保 Rust cargo 在 PATH（否则可能报: failed to get cargo metadata: program not found）
-$env:Path = "C:\Users\Administrator\.cargo\bin;$env:Path"
-
-# 推荐：在仓库根目录触发，统一走脚本（后端 + 前端 + MSI）
-.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe"
-
-# 若仅前端改动，跳过后端重打包
-.\scripts\build_setup.ps1 -PythonExe ".venv\Scripts\python.exe" -SkipBackend
-
-# 仅触发 Tauri msi（需确保 sidecar 已是最新）
-cd desktop_ui
-npm run tauri build -- --bundles msi
-```
-
-MSI 输出目录：
-
-- `desktop_ui/src-tauri/target/release/bundle/msi`
-
-发布建议：
-
-- 仅打包 demo 模板项目，避免把个人项目数据、私有模型配置、私有 base_url 写入安装包。
-
-### 5.3 兼容脚本说明
-
-- scripts/build_exe.ps1 已改为兼容入口，会转调 scripts/build_desktop_bundle.ps1。
-- 不再维护旧 Streamlit 打包链路。
-
-## 6. 模块命名变更
-
-当前主模块：
-
-- backend_api.py：后端 HTTP API 实现
-
-兼容模块：
-
-- state_dashboard.py：仅保留兼容导入（shim）
-
-## 7. Legacy 说明
-
-Streamlit 前端已移出主运行链路，历史快照保留在：
-
-- history/legacy_frontend/streamlit_app_legacy.py
-
-streamlit_app.py 仅保留弃用提示，不再执行旧前端。
+1. docs/workflow_stage_architecture.md
+2. docs/build_and_package.md
