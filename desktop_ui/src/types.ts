@@ -132,6 +132,8 @@ export interface LogsPayload {
     time?: string;
     level?: string;
     message?: string;
+    detail_line?: string;
+    [key: string]: unknown;
   }>;
 }
 

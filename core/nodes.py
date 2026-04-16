@@ -1,8 +1,9 @@
+import copy
 import json
 import os
 import re
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import requests
 # 假设你的其他模块是这样组织的，请根据实际情况调整导入路径
 from core.state import (
@@ -19,29 +20,121 @@ from core.prompts import PROMPT_TEMPLATE
 from core.project_paths import project_path
 
 
+def _append_workflow_event(level: str, message: str, **extra: Any) -> None:
+    payload: Dict[str, Any] = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "level": str(level),
+        "message": str(message),
+    }
+    payload.update(extra)
+
+    runtime_payload: Dict[str, Any] = {}
+    runtime_path = project_path("completed_history", "workflow_runtime.json")
+    try:
+        if os.path.exists(runtime_path):
+            with open(runtime_path, "r", encoding="utf-8") as f:
+                raw_runtime = json.load(f)
+            if isinstance(raw_runtime, dict):
+                runtime_payload = raw_runtime
+    except Exception:
+        runtime_payload = {}
+
+    runtime_status = str(runtime_payload.get("status", "")).strip()
+    if runtime_status and (not str(payload.get("runtime_status", "")).strip()):
+        payload["runtime_status"] = runtime_status
+
+    runtime_phase = str(runtime_payload.get("phase", "")).strip()
+    if runtime_phase and (not str(payload.get("phase", "")).strip()):
+        payload["phase"] = runtime_phase
+
+    runtime_node = str(runtime_payload.get("node", "")).strip()
+    if runtime_node and (not str(payload.get("node", "")).strip()):
+        payload["node"] = runtime_node
+
+    runtime_mode = str(runtime_payload.get("interaction_mode", "")).strip()
+    if runtime_mode and (not str(payload.get("interaction_mode", "")).strip()):
+        payload["interaction_mode"] = runtime_mode
+
+    runtime_pending_action = str(runtime_payload.get("pending_action", "")).strip()
+    if runtime_pending_action and (not str(payload.get("pending_action", "")).strip()):
+        payload["pending_action"] = runtime_pending_action
+
+    events_path = project_path("completed_history", "workflow_events.jsonl")
+    folder = os.path.dirname(events_path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    try:
+        with open(events_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _call_llm_safe(max_retries: int = 3, retry_delay_seconds: float = 2.0, **kwargs) -> Any:
     """
     统一 LLM 安全调用：当出现异常或空响应时进行重试，避免节点直接跳过。
     """
     retries = max(1, int(max_retries))
     delay = max(0.0, float(retry_delay_seconds))
+    model_name = str(kwargs.get("model", "")).strip()
+    node_name = str(kwargs.get("node", "llm_call")).strip() or "llm_call"
 
     for attempt in range(1, retries + 1):
         try:
+            _append_workflow_event(
+                "detail",
+                f"LLM 等待中：第 {attempt}/{retries} 次请求已发出，等待模型返回。",
+                node=node_name,
+                model=model_name,
+                llm_attempt=attempt,
+                llm_max_retries=retries,
+            )
             result = call_llm(**kwargs)
             if result is None:
                 raise RuntimeError("LLM returned None")
             if isinstance(result, str) and (not result.strip()):
 
                 raise RuntimeError("LLM returned empty string")
+            _append_workflow_event(
+                "detail",
+                f"LLM 返回成功：第 {attempt}/{retries} 次请求完成。",
+                node=node_name,
+                model=model_name,
+                llm_attempt=attempt,
+                llm_max_retries=retries,
+            )
             return result
         except Exception as e:
             print(f"[WARN] LLM 调用失败(第 {attempt}/{retries} 次): {e}")
+            _append_workflow_event(
+                "detail",
+                f"LLM 调用失败(第 {attempt}/{retries} 次): {e}",
+                node=node_name,
+                model=model_name,
+                llm_attempt=attempt,
+                llm_max_retries=retries,
+            )
             if attempt >= retries:
                 print("[ERROR] LLM 达到最大重试次数，触发流程暂停。")
+                _append_workflow_event(
+                    "key",
+                    "LLM 达到最大重试次数，流程将暂停等待继续重试。",
+                    node=node_name,
+                    model=model_name,
+                    llm_attempt=attempt,
+                    llm_max_retries=retries,
+                )
                 raise RuntimeError("LLM_RETRY_EXHAUSTED") from e
             sleep_seconds = delay * attempt
             if sleep_seconds > 0:
+                _append_workflow_event(
+                    "detail",
+                    f"LLM 准备重试：{sleep_seconds:.1f}s 后发起第 {attempt + 1}/{retries} 次请求。",
+                    node=node_name,
+                    model=model_name,
+                    llm_attempt=attempt,
+                    llm_max_retries=retries,
+                )
                 time.sleep(sleep_seconds)
 
 
@@ -146,6 +239,95 @@ def _coerce_list_or_none(value: Any) -> Optional[list]:
         if candidates:
             return candidates
     return None
+
+
+def _normalize_image_item(item: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(item, dict):
+        return None
+
+    detailed = str(
+        item.get("detailed_description", item.get("description", item.get("图片的超级详细的描述", "")))
+    ).strip()
+    title = str(item.get("title", item.get("图标题", ""))).strip()
+    image_id = str(item.get("image_id", item.get("图片编号", ""))).strip()
+    if not detailed:
+        return None
+
+    return {
+        "detailed_description": detailed,
+        "title": title,
+        "image_id": image_id,
+    }
+
+
+def _normalize_image_list(raw: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    result: List[Dict[str, str]] = []
+    for item in raw:
+        normalized = _normalize_image_item(item)
+        if normalized is None:
+            continue
+        result.append(normalized)
+    return result
+
+
+def _image_dedup_key(item: Dict[str, str]) -> str:
+    detailed = re.sub(r"\s+", " ", str(item.get("detailed_description", "")).strip().lower())
+    title = re.sub(r"\s+", " ", str(item.get("title", "")).strip().lower())
+    return f"{detailed}||{title}"
+
+
+def _merge_image_pools(user_images: List[Dict[str, str]], planned_images: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    merged: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    for source in [user_images, planned_images]:
+        for item in source:
+            normalized = _normalize_image_item(item)
+            if normalized is None:
+                continue
+            dedup_key = _image_dedup_key(normalized)
+            if (not dedup_key) or (dedup_key in seen):
+                continue
+            seen.add(dedup_key)
+            merged.append({
+                "detailed_description": str(normalized.get("detailed_description", "")).strip(),
+                "title": str(normalized.get("title", "")).strip(),
+            })
+    return merged
+
+
+def _with_major_image_ids(images: List[Dict[str, str]], major_id: str, start_index: int = 1) -> tuple[List[Dict[str, str]], int]:
+    normalized_major_id = str(major_id or "").strip() or "0"
+    next_index = max(1, int(start_index))
+    result: List[Dict[str, str]] = []
+    for item in images:
+        row = dict(item)
+        current_image_id = str(row.get("image_id", "")).strip()
+        if not current_image_id:
+            current_image_id = f"{normalized_major_id}.{next_index}"
+        row["image_id"] = current_image_id
+        result.append(row)
+        next_index += 1
+    return result, next_index
+
+
+def _ensure_image_blocks_in_draft(content: str, images: List[Dict[str, str]]) -> str:
+    cleaned = str(content or "").strip()
+    if not images:
+        return cleaned
+
+    for item in images:
+        detailed = str(item.get("detailed_description", "")).strip()
+        if not detailed:
+            continue
+        image_id = str(item.get("image_id", "")).strip()
+        title = str(item.get("title", "")).strip()
+        block = f"【{detailed}】\n【{(f'{image_id} {title}').strip()}】"
+        if block not in cleaned:
+            cleaned = f"{cleaned}\n\n{block}" if cleaned else block
+    return cleaned.strip()
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -955,6 +1137,54 @@ def node_architecture_review(state: PaperWriterState) -> PaperWriterState:
     return state
 
 
+def node_image_planner(state: PaperWriterState) -> PaperWriterState:
+    """
+    Image Planner Node:
+    在架构确定后，融合用户图片描述与模型补充图片，形成统一图片池供后续 planner/writer 使用。
+    """
+    print("| [Node: ImagePlanner] 开始图片规划与补充...")
+
+    user_images = _normalize_image_list(
+        getattr(state, "user_image_descriptions", getattr(state, "image_descriptions", []))
+    )
+    outline = _coerce_list_or_none(getattr(state, "outline", [])) or []
+
+    system_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["image_planner"].safe_substitute(
+        topic=getattr(state, "topic", ""),
+        language=getattr(state, "language", "English"),
+        user_requirements=getattr(state, "user_requirements", ""),
+        outline=json.dumps(outline, ensure_ascii=False, indent=2),
+        user_image_descriptions=json.dumps(user_images, ensure_ascii=False, indent=2),
+        overall_guidance=state.get_overall_guidance(),
+    )
+
+    response = _call_llm_safe(system_input=system_prompt, thinking=False, model=state.model)
+    _save_llm_call_checkpoint(state, "node_image_planner")
+
+    response_dict = _coerce_dict_or_none(response) or {}
+    planned_raw = response_dict.get("planned_image_descriptions", [])
+    planned_images = _normalize_image_list(planned_raw)
+
+    merged_images = _merge_image_pools(user_images, planned_images)
+    if not merged_images:
+        merged_images = copy.deepcopy(user_images)
+
+    added_count = max(0, len(merged_images) - len(user_images))
+    state.user_image_descriptions = copy.deepcopy(user_images)
+    state.image_descriptions = copy.deepcopy(merged_images)
+    state.planned_image_descriptions = copy.deepcopy(merged_images)
+    state.image_planning_done = True
+    state.image_planning_summary = (
+        f"user_images={len(user_images)}, model_added={added_count}, total={len(merged_images)}"
+    )
+
+    print(
+        f"| [ImagePlanner] 完成，用户图片 {len(user_images)} 条，"
+        f"模型补充 {added_count} 条，最终共 {len(merged_images)} 条。"
+    )
+    return state
+
+
 def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterState:
     """
     Planner Node (Major Level): 接收整个大章节，一次性为下属【所有小节】生成段落蓝图与上下文路由。
@@ -966,9 +1196,12 @@ def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterSta
         [{k: v for k, v in sub.items() if k != "draft_content"} for sub in current_major.get("sub_sections", [])],
         ensure_ascii=False, indent=2
     )
+    available_images = _normalize_image_list(getattr(state, "image_descriptions", []))
+
     # 2. 组装 Prompt (这里需要你的 PROMPT_PLANNER 升级为接受大章节下属所有小节信息的版本)
     # 系统提示词中，我们会要求模型输出一个包含多个对象的数组，每个对象对应一个 sub_chapter_id
     system_prompt = PROMPT_TEMPLATE[state.get_prompt_language()]["planner"].safe_substitute(
+        language=getattr(state, "language", "English"),
         paper_outline=json.dumps(getattr(state, "outline", []), ensure_ascii=False),
         current_major_id=current_major.get("major_chapter_id", ""),
         major_title=major_title,
@@ -976,7 +1209,8 @@ def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterSta
         current_writing_order=current_major.get("writing_order", 99),
         sub_sections_info=sub_sections_info,  # 喂入该大章节下的所有小节概况
         overall_guidance=state.get_overall_guidance(),
-        writing_guidance_catalog=serialize_guidance_catalog(getattr(state, "writing_guidance_library", {}))
+        writing_guidance_catalog=serialize_guidance_catalog(getattr(state, "writing_guidance_library", {})),
+        available_image_descriptions=json.dumps(available_images, ensure_ascii=False, indent=2),
     )
     # 3. 调用大模型
     response = _call_llm_safe(system_input=system_prompt, thinking=False, model=state.model)
@@ -988,6 +1222,8 @@ def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterSta
         plans_list = response_dict.get("plans", [])
 
         # 将计划映射回大纲树中
+        major_id = str(current_major.get("major_chapter_id", "")).strip() or "0"
+        image_serial = 1
         for sub in current_major.get("sub_sections", []):
             target_id = sub.get("sub_chapter_id")
             # 找到对应的规划结果
@@ -998,6 +1234,9 @@ def node_planner(state: PaperWriterState, current_major: Dict) -> PaperWriterSta
                 sub["paragraph_blueprints"] = matched_plan.get("paragraph_blueprints", [])
                 sub["selected_guidance_key"] = matched_plan.get("selected_guidance_key", "none")
                 sub["guidance_reason"] = matched_plan.get("guidance_reason", "")
+                required_images = _normalize_image_list(matched_plan.get("required_images", []))
+                required_images, image_serial = _with_major_image_ids(required_images, major_id=major_id, start_index=image_serial)
+                sub["required_images"] = required_images
                 print(f"| 小节 [{target_id}] 蓝图与路由已挂载。")
             else:
                 print(f"   [WARN] 未找到小节 [{target_id}] 的规划结果！")
@@ -1048,6 +1287,10 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
     selected_guidance = guidance_library.get(guidance_key, "") if guidance_key != "none" else ""
     if not selected_guidance:
         selected_guidance = "未指定模块写作指导建议。"
+    required_images = _normalize_image_list(current_sub.get("required_images", []))
+    required_images, _ = _with_major_image_ids(required_images, major_id=major_id, start_index=1)
+    current_sub["required_images"] = copy.deepcopy(required_images)
+    required_images_json = json.dumps(required_images, ensure_ascii=False, indent=2)
 
     if is_zero_chapter:
         minimal_block = _build_zero_chapter_minimal_block(state, str(sub_id), sub_title)
@@ -1121,6 +1364,7 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
         research_gap_all=context_gap,
         existing_sections=context_sections,  # 精准喂入的前文
         selected_writing_guidance=selected_guidance,
+        required_images=required_images_json,
         language=getattr(state, "language", "English"),
         user_requirements=getattr(state, "user_requirements", ""),
         is_zero_chapter="true" if is_zero_chapter else "false",
@@ -1145,6 +1389,9 @@ def node_writer(state: PaperWriterState, current_major: Dict, current_sub: Dict)
             lead=header_lead,
             opening_markdown=str(current_major.get("chapter_opening_markdown", "")).strip(),
         )
+
+    if not is_zero_chapter:
+        cleaned_draft = _ensure_image_blocks_in_draft(cleaned_draft, required_images)
     # 7. 更新状态树中的草稿 (方便UI树状展示)
     current_sub["draft_content"] = cleaned_draft
 

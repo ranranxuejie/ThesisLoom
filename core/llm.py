@@ -11,6 +11,53 @@ from typing import Any
 from volcenginesdkarkruntime import Ark
 from core.state import resolve_inputs_path
 from core.project_paths import project_path
+
+
+BASE_URL_TEST_ENDPOINT = "https://acai-proxy-api.onrender.com/v1"
+BASE_URL_TEST_API_KEY = "sk-123"
+ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+_ALLOWED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "base_url": (
+        "claude-sonnet-4-5-20250929-thinking",
+        "gemini-3.1-pro",
+    ),
+    "doubao": (
+        "doubao-seed-2-0-pro-260215",
+        "doubao-seed-2-0-mini-260215",
+    ),
+    "openrouter": (
+        "claude-sonnet-4-5-20250929-thinking",
+        "gemini-3.1-pro",
+    ),
+    "anthropic": (
+        "claude-opus-4-6",
+        "claude-opus-4-6-20260205",
+    ),
+}
+
+_DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
+    "base_url": "gemini-3.1-pro",
+    "doubao": "doubao-seed-2-0-pro-260215",
+    "openrouter": "gemini-3.1-pro",
+    "anthropic": "claude-opus-4-6",
+}
+
+
+def _normalize_model_by_provider(provider: str, requested_model: str) -> tuple[str, bool]:
+    provider_key = str(provider or "base_url").strip().lower()
+    if provider_key not in _ALLOWED_MODELS_BY_PROVIDER:
+        provider_key = "base_url"
+
+    allowed = _ALLOWED_MODELS_BY_PROVIDER.get(provider_key, ())
+    requested = str(requested_model or "").strip()
+    if requested in allowed:
+        return requested, False
+
+    fallback = _DEFAULT_MODEL_BY_PROVIDER.get(provider_key, "gemini-3.1-pro")
+    return fallback, True
+
+
 def _estimate_tokens_locally(text: str) -> int:
     if not text:
         return 0
@@ -239,6 +286,26 @@ def _build_chat_completions_url(base_url: str) -> str:
         return f"{base}/chat/completions"
     return f"{base}/v1/chat/completions"
 
+
+def _build_anthropic_messages_url(base_url: str) -> str:
+    """Normalize Anthropic-compatible endpoint URLs.
+
+    Accepted inputs:
+    - https://api.anthropic.com
+    - https://api.anthropic.com/v1
+    - https://api.anthropic.com/v1/messages
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+
+    lower = base.lower()
+    if lower.endswith("/messages"):
+        return base
+    if lower.endswith("/v1"):
+        return f"{base}/messages"
+    return f"{base}/v1/messages"
+
 def call_llm(system_input: str,
              user_input: str="",
              json_schema: dict=None,
@@ -250,16 +317,36 @@ def call_llm(system_input: str,
     cfg_base_url, cfg_model_api_key, cfg_ark_api_key, cfg_model_provider = _load_llm_runtime_config_from_inputs()
 
     provider_raw = str(cfg_model_provider or "").strip().lower()
-    if provider_raw in {"base_url", "doubao", "openrouter"}:
+    if provider_raw in {"base_url", "doubao", "openrouter", "anthropic"}:
         provider = provider_raw
     else:
         # Backward compatibility: old configs without model_provider still auto-route doubao models.
-        provider = "doubao" if "doubao" in str(model).lower() else "base_url"
+        model_lower = str(model).lower()
+        if "doubao" in model_lower:
+            provider = "doubao"
+        elif model_lower in {x.lower() for x in _ALLOWED_MODELS_BY_PROVIDER["anthropic"]}:
+            provider = "anthropic"
+        else:
+            provider = "base_url"
+
+    model_before_normalize = str(model or "").strip()
+    model, model_coerced = _normalize_model_by_provider(provider, model_before_normalize)
+    if model_coerced:
+        _dump_llm_debug(
+            event="model_normalized_by_provider",
+            info={
+                "provider": provider,
+                "requested_model": model_before_normalize,
+                "normalized_model": model,
+                "allowed_models": list(_ALLOWED_MODELS_BY_PROVIDER.get(provider, ())),
+            },
+        )
 
     # 用一个字典作为容器，用来在主线程和子线程之间传递结果或异常
     result_container = {}
     if provider == "doubao":
-        api_key = os.getenv("ARK_API_KEY") or cfg_ark_api_key or cfg_model_api_key
+        # Prefer runtime/project config first so updated keys in inputs.json take effect immediately.
+        api_key = cfg_ark_api_key or cfg_model_api_key or os.getenv("ARK_API_KEY")
         if not api_key:
             raise EnvironmentError("Please set ARK_API_KEY environment variable")
         client = Ark(base_url="https://ark.cn-beijing.volces.com/api/v3", api_key=api_key,timeout=1800)
@@ -319,11 +406,140 @@ def call_llm(system_input: str,
         # 1. 启动后台子线程执行耗时的 API 调用
         api_thread = threading.Thread(target=_api_call)
 
+    elif provider == "anthropic":
+        base_url = cfg_base_url or os.getenv("LOCAL_API_URL") or ANTHROPIC_DEFAULT_BASE_URL
+        token = cfg_model_api_key or cfg_ark_api_key or os.getenv("LOCAL_API_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+        if not token:
+            raise EnvironmentError("Please set model_api_key (or ANTHROPIC_API_KEY) for Anthropic provider")
+
+        messages_url = _build_anthropic_messages_url(base_url)
+        if not messages_url:
+            raise EnvironmentError("Please set a valid base_url for Anthropic provider")
+
+        # Anthropic x-api-key header expects raw key without Bearer prefix.
+        token_clean = re.sub(r"(?i)^\s*bearer\s+", "", str(token or "")).strip()
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": token_clean,
+            "anthropic-version": "2023-06-01",
+        }
+
+        anthropic_messages = []
+        if user_input:
+            anthropic_messages.append({
+                "role": "user",
+                "content": user_input,
+            })
+        elif system_input:
+            # Some gateways reject whitespace-only user content when system is present.
+            anthropic_messages.append({
+                "role": "user",
+                "content": "Please follow system instructions.",
+            })
+        else:
+            anthropic_messages.append({
+                "role": "user",
+                "content": "Please answer briefly.",
+            })
+
+        anthropic_payload = {
+            "model": model,
+            "max_tokens": max(1, int(max_completion_tokens)),
+            "messages": anthropic_messages,
+        }
+        if system_input:
+            anthropic_payload["system"] = system_input
+
+        def _anthropic_call():
+            try:
+                resp = requests.post(
+                    messages_url,
+                    headers=headers,
+                    json=anthropic_payload,
+                    timeout=request_timeout,
+                )
+                resp.raise_for_status()
+
+                obj = resp.json() if resp.content else {}
+                full_content = ""
+                usage_input_tokens = 0
+                usage_output_tokens = 0
+
+                if isinstance(obj, dict):
+                    content_list = obj.get("content", [])
+                    if isinstance(content_list, list):
+                        parts = []
+                        for item in content_list:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "text":
+                                parts.append(str(item.get("text", "")))
+                        full_content = "".join(parts).strip()
+
+                    if not full_content:
+                        full_content = "".join(_extract_content_parts_from_chunk_obj(obj)).strip()
+
+                    usage_obj = obj.get("usage", {})
+                    if isinstance(usage_obj, dict):
+                        usage_input_tokens = int(
+                            usage_obj.get("input_tokens", usage_obj.get("prompt_tokens", 0)) or 0
+                        )
+                        usage_output_tokens = int(
+                            usage_obj.get("output_tokens", usage_obj.get("completion_tokens", 0)) or 0
+                        )
+
+                full_content = _sanitize_sse_leakage_text(full_content)
+                if not full_content:
+                    _dump_llm_debug(
+                        event="anthropic_empty_response",
+                        info={
+                            "model": model,
+                            "messages_url": messages_url,
+                            "headers": headers,
+                            "payload": anthropic_payload,
+                            "status_code": resp.status_code,
+                            "response_text": (resp.text or "")[:4000],
+                        },
+                    )
+                    result_container['response'] = ""
+                    return
+
+                if usage_input_tokens <= 0:
+                    usage_input_tokens = _estimate_messages_tokens([
+                        {"role": "system", "content": system_input},
+                        {"role": "user", "content": user_input},
+                    ])
+                if usage_output_tokens <= 0:
+                    usage_output_tokens = _estimate_tokens_locally(full_content)
+
+                result_container['response'] = full_content
+                result_container['_input_tokens'] = usage_input_tokens
+                result_container['_output_tokens'] = usage_output_tokens
+            except Exception as e:
+                _dump_llm_debug(
+                    event="anthropic_request_error",
+                    info={
+                        "model": model,
+                        "messages_url": messages_url,
+                        "headers": headers,
+                        "payload": anthropic_payload,
+                        "request_timeout": request_timeout,
+                        "exception": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
+                result_container['error'] = str(e)
+
+        print(f"| | |[RUN] 发起Anthropic格式请求 (模型: {model})")
+        api_thread = threading.Thread(target=_anthropic_call)
+
     else:
-        base_url = cfg_base_url or os.getenv("LOCAL_API_URL")
-        if (not base_url) and provider == "openrouter":
-            base_url = "https://openrouter.ai/api/v1"
-        token = cfg_model_api_key or os.getenv("LOCAL_API_TOKEN")
+        if provider == "openrouter":
+            base_url = cfg_base_url or os.getenv("LOCAL_API_URL") or "https://openrouter.ai/api/v1"
+            token = cfg_model_api_key or os.getenv("LOCAL_API_TOKEN")
+        else:
+            base_url = cfg_base_url or os.getenv("LOCAL_API_URL") or BASE_URL_TEST_ENDPOINT
+            token = cfg_model_api_key or os.getenv("LOCAL_API_TOKEN") or BASE_URL_TEST_API_KEY
         # --- 新增：调用你本地的 FastAPI 代理服务 ---
         if not base_url:
             raise EnvironmentError("Please set LOCAL_API_URL or base_url in inputs config")

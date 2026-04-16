@@ -726,6 +726,80 @@ def _write_inputs_payload(text: str) -> dict:
     return {"ok": True, "path": path, "data": data}
 
 
+_DETAIL_LOG_CONTEXT_KEYS = [
+    "phase",
+    "node",
+    "major_id",
+    "sub_id",
+    "status",
+    "runtime_status",
+    "pending_action",
+    "llm_attempt",
+    "llm_max_retries",
+    "model",
+    "interaction_mode",
+]
+
+
+def _to_compact_log_text(value, max_len: int = 140) -> str:
+    try:
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False)
+        else:
+            text = str(value)
+    except Exception:
+        text = str(value)
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) > max_len:
+        return text[: max_len - 1] + "..."
+    return text
+
+
+def _build_log_detail_line(item: dict) -> str:
+    message = str(item.get("message", "")).strip()
+    parts: list[str] = []
+    used: set[str] = set()
+
+    for key in _DETAIL_LOG_CONTEXT_KEYS:
+        if key not in item:
+            continue
+        value = item.get(key)
+        if value is None:
+            continue
+        text = _to_compact_log_text(value)
+        if not text:
+            continue
+        parts.append(f"{key}={text}")
+        used.add(key)
+
+    for key in sorted(item.keys()):
+        if key in {"time", "level", "message", "detail_line"} or key in used:
+            continue
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (str, list, dict)) and not value:
+            continue
+        text = _to_compact_log_text(value)
+        if not text:
+            continue
+        parts.append(f"{key}={text}")
+
+    if parts:
+        return f"{message} | {' | '.join(parts)}" if message else " | ".join(parts)
+    return message
+
+
+def _normalize_workflow_log_item(item: dict, mode: str) -> dict:
+    normalized = dict(item)
+    normalized["time"] = str(item.get("time", ""))
+    normalized["level"] = str(item.get("level", "detail"))
+    normalized["message"] = str(item.get("message", ""))
+    if mode == "detail":
+        normalized["detail_line"] = _build_log_detail_line(normalized)
+    return normalized
+
+
 def _read_workflow_logs(mode: str, limit: int) -> list[dict]:
     events_file = _events_file()
     if not os.path.exists(events_file):
@@ -748,7 +822,7 @@ def _read_workflow_logs(mode: str, limit: int) -> list[dict]:
         level = str(item.get("level", "detail"))
         if mode == "key" and level != "key":
             continue
-        rows.append(item)
+        rows.append(_normalize_workflow_log_item(item, mode))
     return rows[-max(1, limit):]
 
 
@@ -1003,6 +1077,11 @@ def _read_state_snapshot() -> dict:
           pending_action_message = runtime_pending_action_message
     elif runtime_status in {"running", "starting", "paused", "done", "stopped", "failed"}:
       # Runtime is actively executing or already finished; stale checkpoint pending actions should be hidden.
+      pending_action = ""
+      pending_action_message = ""
+    else:
+      # Unknown runtime state usually means runtime file is missing or stale.
+      # Hide checkpoint pending actions to avoid showing non-executable action buttons.
       pending_action = ""
       pending_action_message = ""
 
@@ -1432,7 +1511,7 @@ HTML = """<!doctype html>
       const rows = (data.items || []).map((x) => {
         const t = x.time || '-';
         const lvl = x.level || 'detail';
-        const msg = x.message || '';
+        const msg = (logMode === 'detail') ? (x.detail_line || x.message || '') : (x.message || '');
         return '[' + t + '][' + lvl + '] ' + msg;
       });
       box.textContent = rows.length ? rows.join('\\n') : '暂无日志';

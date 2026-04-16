@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 import os, json
 import glob
 import re
@@ -294,6 +294,29 @@ def cat_input_from_md(inputs: Dict[str, Any], folder_path: str = "") -> Dict[str
     return inputs
 
 
+def _normalize_image_descriptions(raw: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+
+    result: List[Dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+
+        detailed = str(
+            item.get("detailed_description", item.get("description", item.get("图片的超级详细的描述", "")))
+        ).strip()
+        title = str(item.get("title", item.get("图标题", ""))).strip()
+        if not detailed:
+            continue
+
+        result.append({
+            "detailed_description": detailed,
+            "title": title,
+        })
+    return result
+
+
 def load_writing_guidance_library(folder_path: str = "") -> Dict[str, str]:
     """
     从 guidance 目录加载模块写作指导文件。
@@ -384,13 +407,29 @@ class PaperWriterState:
         # ==========================================
         if input_from_md:
             inputs = cat_input_from_md(inputs)
-        self.model: str = inputs.get("model", "gemini-3-pro")
+        self.model: str = inputs.get("model", "gemini-3.1-pro")
         self.topic: str = str(inputs.get("topic", "")).strip()
         self.existing_sections: str = inputs.get("existing_sections", "无")
         self.existing_material: str = inputs.get("existing_material", "无")
         self.research_gaps: str = inputs.get("research_gaps", "")
         self.language: str = inputs.get("language", "English")
         self.user_requirements: str = inputs.get("write_requests", inputs.get("user_requirements", ""))
+        self.user_image_descriptions: List[Dict[str, str]] = _normalize_image_descriptions(
+            inputs.get("user_image_descriptions", inputs.get("image_descriptions", []))
+        )
+        self.planned_image_descriptions: List[Dict[str, str]] = _normalize_image_descriptions(
+            inputs.get("planned_image_descriptions", [])
+        )
+        if self.planned_image_descriptions:
+            self.image_descriptions: List[Dict[str, str]] = list(self.planned_image_descriptions)
+        else:
+            self.image_descriptions = list(self.user_image_descriptions)
+        self.image_planning_done: bool = bool(
+            inputs.get("image_planning_done", bool(self.planned_image_descriptions))
+        )
+        if self.image_planning_done and (not self.planned_image_descriptions):
+            self.planned_image_descriptions = list(self.image_descriptions)
+        self.image_planning_summary: str = str(inputs.get("image_planning_summary", "")).strip()
         self.related_works_path: str = inputs.get("related_works_path", project_path("inputs", "related_works.md"))
         self.research_gap_output_path: str = inputs.get("research_gap_output_path", project_path("inputs", "research_gaps.md"))
         self.paper_search_limit: int = int(inputs.get("paper_search_limit", 20))

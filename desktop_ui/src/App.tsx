@@ -22,7 +22,7 @@ const API_BASE_URL = "http://127.0.0.1:18765";
 
 type PageKey = "projects" | "inputs" | "outputs" | "workflow" | "about";
 type OutputTab = "paper" | "pipeline";
-type ModelProvider = "base_url" | "doubao" | "openrouter";
+type ModelProvider = "base_url" | "doubao" | "openrouter" | "anthropic";
 type TutorialPopoverPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
 const APP_VERSION = String((packageJson as { version?: string }).version || "0.1.0");
@@ -36,6 +36,11 @@ interface TutorialStep {
   position: TutorialPopoverPosition;
 }
 
+interface ImageDescriptionItem {
+  detailed_description: string;
+  title: string;
+}
+
 interface InputsFormState {
   topic: string;
   language: "English" | "Chinese";
@@ -46,6 +51,7 @@ interface InputsFormState {
   ark_api_key: string;
   base_url: string;
   model_api_key: string;
+  image_descriptions: ImageDescriptionItem[];
 }
 
 type InputsFieldErrors = Partial<Record<keyof InputsFormState, string>>;
@@ -56,19 +62,42 @@ interface InputsValidationResult {
   warnings: string[];
 }
 
+const BASE_URL_TEST_ENDPOINT = "https://acai-proxy-api.onrender.com/v1";
+const BASE_URL_TEST_API_KEY = "sk-123";
+const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
+
+const PROVIDER_MODEL_OPTIONS: Record<ModelProvider, readonly string[]> = {
+  base_url: ["claude-sonnet-4-5-20250929-thinking", "gemini-3.1-pro"],
+  doubao: ["doubao-seed-2-0-pro-260215", "doubao-seed-2-0-mini-260215"],
+  openrouter: ["claude-sonnet-4-5-20250929-thinking", "gemini-3.1-pro"],
+  anthropic: ["claude-opus-4-6", "claude-opus-4-6-20260205"],
+};
+
+const DEFAULT_PROVIDER_MODEL: Record<ModelProvider, string> = {
+  base_url: "gemini-3.1-pro",
+  doubao: "doubao-seed-2-0-pro-260215",
+  openrouter: "gemini-3.1-pro",
+  anthropic: "claude-opus-4-6",
+};
+
 const DEFAULT_INPUTS_FORM: InputsFormState = {
   topic: "",
   language: "English",
-  model: "gemini-3.1-pro",
+  model: DEFAULT_PROVIDER_MODEL.base_url,
   model_provider: "base_url",
   paper_search_limit: 30,
   openalex_api_key: "",
   ark_api_key: "",
-  base_url: "",
-  model_api_key: "",
+  base_url: BASE_URL_TEST_ENDPOINT,
+  model_api_key: BASE_URL_TEST_API_KEY,
+  image_descriptions: [],
 };
 
-const DOUBAO_DEFAULT_MODEL = "doubao-seed-2-0-pro-260215";
+const DOUBAO_DEFAULT_MODEL = DEFAULT_PROVIDER_MODEL.doubao;
+const EMPTY_IMAGE_DESCRIPTION_ITEM: ImageDescriptionItem = {
+  detailed_description: "",
+  title: "",
+};
 
 const FLOW_STEPS = [
   {
@@ -161,6 +190,7 @@ const ARCHITECTURE_NODES = new Set([
 ]);
 
 const PLANNING_NODES = new Set([
+  "node_image_planner",
   "node_planner",
   "node_chapter_header",
   "node_chapter_opening",
@@ -217,6 +247,7 @@ const NODE_LABELS: Record<string, string> = {
   node_research_gaps: "研究空白生成",
   node_architect: "架构生成",
   node_architecture_review: "架构审查",
+  node_image_planner: "图片规划",
   node_planner: "章节规划",
   node_chapter_header: "章节标题",
   node_chapter_opening: "章节总起",
@@ -418,6 +449,104 @@ function isValidHttpUrl(raw: string): boolean {
   }
 }
 
+function normalizeImageDescriptionsForForm(raw: unknown): ImageDescriptionItem[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const rows: ImageDescriptionItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const detailedDescription = String(
+      record.detailed_description ?? record.description ?? record["图片的超级详细的描述"] ?? "",
+    ).trim();
+    const title = String(record.title ?? record["图标题"] ?? "").trim();
+    if (!detailedDescription && !title) {
+      continue;
+    }
+
+    rows.push({
+      detailed_description: detailedDescription,
+      title,
+    });
+  }
+  return rows;
+}
+
+function normalizeImageDescriptionsForPayload(rows: ImageDescriptionItem[]): ImageDescriptionItem[] {
+  const result: ImageDescriptionItem[] = [];
+  for (const item of rows) {
+    const detailedDescription = String(item.detailed_description || "").trim();
+    const title = String(item.title || "").trim();
+    if (!detailedDescription) {
+      continue;
+    }
+    result.push({
+      detailed_description: detailedDescription,
+      title,
+    });
+  }
+  return result;
+}
+
+function normalizeModelForProvider(provider: ModelProvider, rawModel: unknown): string {
+  const model = String(rawModel ?? "").trim();
+  const options = PROVIDER_MODEL_OPTIONS[provider] || [];
+  if (options.includes(model)) {
+    return model;
+  }
+  return DEFAULT_PROVIDER_MODEL[provider];
+}
+
+function formatWorkflowLogRow(item: Record<string, unknown>, mode: LogMode): string {
+  const t = String(item.time ?? "-");
+  const lvl = String(item.level ?? "detail");
+  const msg = String(item.message ?? "");
+  const detailLine = String(item.detail_line ?? "").trim();
+
+  if (mode === "detail" && detailLine) {
+    return `[${t}] [${lvl}] ${detailLine}`;
+  }
+
+  if (mode !== "detail") {
+    return `[${t}] [${lvl}] ${msg}`;
+  }
+
+  const contextKeys = [
+    "phase",
+    "node",
+    "major_id",
+    "sub_id",
+    "status",
+    "runtime_status",
+    "pending_action",
+    "llm_attempt",
+    "llm_max_retries",
+    "model",
+    "interaction_mode",
+  ];
+  const contextParts: string[] = [];
+  contextKeys.forEach((key) => {
+    const value = item[key];
+    if (value === undefined || value === null) {
+      return;
+    }
+    const text = String(value).trim();
+    if (!text) {
+      return;
+    }
+    contextParts.push(`${key}=${text}`);
+  });
+
+  return contextParts.length > 0
+    ? `[${t}] [${lvl}] ${msg} | ${contextParts.join(" | ")}`
+    : `[${t}] [${lvl}] ${msg}`;
+}
+
 function validateInputsForm(form: InputsFormState): InputsValidationResult {
   const fieldErrors: InputsFieldErrors = {};
   const blockingIssues: string[] = [];
@@ -435,6 +564,13 @@ function validateInputsForm(form: InputsFormState): InputsValidationResult {
     const message = "模型名称不能为空。";
     fieldErrors.model = message;
     blockingIssues.push(message);
+  } else {
+    const allowedModels = PROVIDER_MODEL_OPTIONS[form.model_provider] || [];
+    if (!allowedModels.includes(model)) {
+      const message = `当前供应商仅支持以下模型: ${allowedModels.join(" / ")}`;
+      fieldErrors.model = message;
+      blockingIssues.push(message);
+    }
   }
 
   const searchLimit = Number(form.paper_search_limit || 0);
@@ -447,7 +583,7 @@ function validateInputsForm(form: InputsFormState): InputsValidationResult {
   const baseUrl = String(form.base_url || "").trim();
   if (form.model_provider === "base_url") {
     if (!baseUrl) {
-      warnings.push("当前使用自定义 Base URL，建议填写服务地址以避免请求失败。");
+      warnings.push(`当前使用 Base URL 供应商，建议填写服务地址（默认可用：${BASE_URL_TEST_ENDPOINT}）。`);
     } else if (!isValidHttpUrl(baseUrl)) {
       const message = "模型服务地址格式无效，请使用 http(s):// 开头的完整 URL。";
       fieldErrors.base_url = message;
@@ -457,6 +593,28 @@ function validateInputsForm(form: InputsFormState): InputsValidationResult {
 
   if (form.model_provider === "openrouter" && baseUrl && !isValidHttpUrl(baseUrl)) {
     warnings.push("检测到 base_url 格式异常，建议改为 OpenRouter 默认地址。");
+  }
+
+  if (form.model_provider === "anthropic" && baseUrl && !isValidHttpUrl(baseUrl)) {
+    warnings.push("检测到 Anthropic base_url 格式异常，建议改为 https://api.anthropic.com。");
+  }
+
+  const imageDescriptions = Array.isArray(form.image_descriptions) ? form.image_descriptions : [];
+  const invalidRows: number[] = [];
+  imageDescriptions.forEach((item, index) => {
+    const detailed = String(item?.detailed_description || "").trim();
+    const title = String(item?.title || "").trim();
+    if (!detailed && !title) {
+      return;
+    }
+    if (!detailed) {
+      invalidRows.push(index + 1);
+    }
+  });
+  if (invalidRows.length > 0) {
+    const message = `图片描述第 ${invalidRows.join("、")} 行缺少详细描述。`;
+    fieldErrors.image_descriptions = message;
+    blockingIssues.push(message);
   }
 
   return { fieldErrors, blockingIssues, warnings };
@@ -519,6 +677,7 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
     "ark_api_key",
     "base_url",
     "model_api_key",
+    "image_descriptions",
     "auto_resume",
   ]);
 
@@ -533,35 +692,71 @@ function parseInputsForm(raw: string): { form: InputsFormState; extra: Record<st
   const language: "English" | "Chinese" = languageValue === "Chinese" ? "Chinese" : "English";
   const providerValue = String(parsed.model_provider ?? DEFAULT_INPUTS_FORM.model_provider).trim().toLowerCase();
   const modelProvider: ModelProvider =
-    providerValue === "doubao" ? "doubao" : providerValue === "openrouter" ? "openrouter" : "base_url";
+    providerValue === "doubao"
+      ? "doubao"
+      : providerValue === "openrouter"
+        ? "openrouter"
+        : providerValue === "anthropic"
+          ? "anthropic"
+          : "base_url";
+
+  const rawBaseUrl = String(parsed.base_url ?? DEFAULT_INPUTS_FORM.base_url).trim();
+  const normalizedBaseUrl =
+    modelProvider === "anthropic"
+      ? (rawBaseUrl || ANTHROPIC_DEFAULT_BASE_URL)
+      : modelProvider === "base_url"
+        ? (rawBaseUrl || BASE_URL_TEST_ENDPOINT)
+        : rawBaseUrl;
+
+  const rawModelApiKey = String(parsed.model_api_key ?? DEFAULT_INPUTS_FORM.model_api_key);
+  const normalizedModelApiKey =
+    modelProvider === "base_url"
+      ? (String(rawModelApiKey).trim() || BASE_URL_TEST_API_KEY)
+      : rawModelApiKey;
 
   const form: InputsFormState = {
     topic: String(parsed.topic ?? DEFAULT_INPUTS_FORM.topic),
     language,
-    model: String(parsed.model ?? DEFAULT_INPUTS_FORM.model),
+    model: normalizeModelForProvider(modelProvider, parsed.model),
     model_provider: modelProvider,
     paper_search_limit: toNumber(parsed.paper_search_limit, DEFAULT_INPUTS_FORM.paper_search_limit, 1, 300),
     openalex_api_key: String(parsed.openalex_api_key ?? DEFAULT_INPUTS_FORM.openalex_api_key),
     ark_api_key: String(parsed.ark_api_key ?? DEFAULT_INPUTS_FORM.ark_api_key),
-    base_url: String(parsed.base_url ?? DEFAULT_INPUTS_FORM.base_url),
-    model_api_key: String(parsed.model_api_key ?? DEFAULT_INPUTS_FORM.model_api_key),
+    base_url: normalizedBaseUrl,
+    model_api_key: normalizedModelApiKey,
+    image_descriptions: normalizeImageDescriptionsForForm(parsed.image_descriptions),
   };
 
   return { form, extra };
 }
 
 function composeInputsPayload(form: InputsFormState, extra: Record<string, unknown>): Record<string, unknown> {
+  const imageDescriptions = normalizeImageDescriptionsForPayload(form.image_descriptions);
+  const normalizedModel = normalizeModelForProvider(form.model_provider, form.model);
+  const rawBaseUrl = String(form.base_url || "").trim();
+  const normalizedBaseUrl =
+    form.model_provider === "anthropic"
+      ? (rawBaseUrl || ANTHROPIC_DEFAULT_BASE_URL)
+      : form.model_provider === "base_url"
+        ? (rawBaseUrl || BASE_URL_TEST_ENDPOINT)
+        : rawBaseUrl;
+  const normalizedModelApiKey =
+    form.model_provider === "base_url"
+      ? (String(form.model_api_key || "").trim() || BASE_URL_TEST_API_KEY)
+      : form.model_api_key;
+
   return {
     ...extra,
     topic: form.topic,
     language: form.language,
-    model: form.model,
+    model: normalizedModel,
     model_provider: form.model_provider,
     paper_search_limit: form.paper_search_limit,
     openalex_api_key: form.openalex_api_key,
     ark_api_key: form.ark_api_key,
-    base_url: form.base_url,
-    model_api_key: form.model_api_key,
+    base_url: normalizedBaseUrl,
+    model_api_key: normalizedModelApiKey,
+    image_descriptions: imageDescriptions,
   };
 }
 
@@ -746,12 +941,7 @@ function App() {
         setLogs(["日志读取失败"]);
         return;
       }
-      const rows = (data.items || []).map((item) => {
-        const t = item.time || "-";
-        const lvl = item.level || "detail";
-        const msg = item.message || "";
-        return `[${t}] [${lvl}] ${msg}`;
-      });
+      const rows = (data.items || []).map((item) => formatWorkflowLogRow(item as Record<string, unknown>, logMode));
       setLogs(rows.length > 0 ? rows : ["暂无日志"]);
     } catch (err) {
       setLogs([`日志接口不可达: ${String(err)}`]);
@@ -903,15 +1093,35 @@ function App() {
     setAutoSaveHint("待自动保存");
   }, []);
 
+  const addImageDescriptionRow = useCallback(() => {
+    setInputsForm((prev) => ({
+      ...prev,
+      image_descriptions: [...prev.image_descriptions, { ...EMPTY_IMAGE_DESCRIPTION_ITEM }],
+    }));
+    setAutoSaveHint("待自动保存");
+  }, []);
+
+  const updateImageDescriptionRow = useCallback((index: number, key: keyof ImageDescriptionItem, value: string) => {
+    setInputsForm((prev) => ({
+      ...prev,
+      image_descriptions: prev.image_descriptions.map((row, rowIndex) => (
+        rowIndex === index ? { ...row, [key]: value } : row
+      )),
+    }));
+    setAutoSaveHint("待自动保存");
+  }, []);
+
+  const removeImageDescriptionRow = useCallback((index: number) => {
+    setInputsForm((prev) => ({
+      ...prev,
+      image_descriptions: prev.image_descriptions.filter((_, rowIndex) => rowIndex !== index),
+    }));
+    setAutoSaveHint("待自动保存");
+  }, []);
+
   const sendAction = useCallback(
     async (payload: Record<string, unknown>) => {
-      try {
-        const data = await postAction(baseUrl, payload);
-        if (!data.ok) {
-          pushNotice("error", data.message || "动作提交失败");
-          return;
-        }
-
+      const finishActionSubmission = async () => {
         // Optimistically hide pending action so the button disappears immediately after click.
         setStateSnapshot((prev) => {
           if (!prev) {
@@ -927,8 +1137,46 @@ function App() {
         pushNotice("ok", `动作已提交: ${String(payload.action || "unknown")}`);
         await refreshState();
         await refreshLogs();
+      };
+
+      try {
+        const data = await postAction(baseUrl, payload);
+        if (!data.ok) {
+          pushNotice("error", data.message || "动作提交失败");
+          return;
+        }
+        await finishActionSubmission();
       } catch (err) {
-        pushNotice("error", `动作提交失败: ${String(err)}`);
+        const firstError = String(err);
+        pushNotice("warn", "动作提交失败，正在尝试自动恢复后端后重试...");
+
+        try {
+          const status = await invoke<BackendStatus>("backend_status", {
+            workspace_root: "",
+          });
+
+          if (!status.running) {
+            const started = await invoke<BackendStatus>("start_backend", {
+              host: "127.0.0.1",
+              port: 18765,
+              python_path: "",
+              workspace_root: "",
+            });
+            setBackendStatus(started);
+          } else {
+            setBackendStatus(status);
+          }
+
+          const retryResult = await postAction(baseUrl, payload);
+          if (!retryResult.ok) {
+            pushNotice("error", retryResult.message || "动作重试失败");
+            return;
+          }
+
+          await finishActionSubmission();
+        } catch (retryErr) {
+          pushNotice("error", `动作提交失败: ${firstError}；重试后仍失败: ${String(retryErr)}`);
+        }
       }
     },
     [baseUrl, pushNotice, refreshLogs, refreshState],
@@ -1268,28 +1516,39 @@ function App() {
   const phaseMajor = flowMajorLabel || PHASE_LABELS[phase] || phase;
   const isDoubaoProvider = inputsForm.model_provider === "doubao";
   const isOpenRouterProvider = inputsForm.model_provider === "openrouter";
+  const isAnthropicProvider = inputsForm.model_provider === "anthropic";
+  const providerModelOptions = PROVIDER_MODEL_OPTIONS[inputsForm.model_provider] || [];
+  const providerSelectedModel = normalizeModelForProvider(inputsForm.model_provider, inputsForm.model);
   const activeApiKeyValue = isDoubaoProvider ? inputsForm.ark_api_key : inputsForm.model_api_key;
   const activeApiKeyTitle = isDoubaoProvider ? "ark_api_key" : "model_api_key";
   const activeApiKeyLabel = isDoubaoProvider
     ? "豆包 Ark API 密钥（可选）"
-    : isOpenRouterProvider
-      ? "OpenRouter API 密钥（可选）"
-      : "模型服务 API 密钥（可选）";
+    : isAnthropicProvider
+      ? "Anthropic API 密钥（可选）"
+      : isOpenRouterProvider
+        ? "OpenRouter API 密钥（可选）"
+        : "模型服务 API 密钥（默认 sk-123，可替换）";
   const activeApiKeyPlaceholder = isDoubaoProvider
     ? "请输入豆包 Ark API Key"
-    : isOpenRouterProvider
-      ? "请输入 OpenRouter API Key"
-      : "可为空";
+    : isAnthropicProvider
+      ? "请输入 Anthropic API Key"
+      : isOpenRouterProvider
+        ? "请输入 OpenRouter API Key"
+        : "默认 sk-123（可替换）";
   const activeApiKeyLink = isDoubaoProvider
     ? "https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement"
-    : isOpenRouterProvider
-      ? "https://openrouter.ai/workspaces/default/keys"
-      : "";
+    : isAnthropicProvider
+      ? "https://console.anthropic.com/settings/keys"
+      : isOpenRouterProvider
+        ? "https://openrouter.ai/workspaces/default/keys"
+        : "";
   const activeApiKeyHelp = isDoubaoProvider
     ? "当前仅需填写豆包 Ark API 密钥；切到其他供应商时再填写对应密钥。"
-    : isOpenRouterProvider
-      ? "当前仅需填写 OpenRouter API 密钥；豆包 Ark API 密钥可留空。"
-      : "当前仅需填写模型服务 API 密钥；豆包 Ark API 密钥可留空。";
+    : isAnthropicProvider
+      ? "当前固定支持 Claude Opus 4.6 两个模型版本；可填写 Anthropic API 密钥后直接运行。"
+      : isOpenRouterProvider
+        ? "当前仅需填写 OpenRouter API 密钥；豆包 Ark API 密钥可留空。"
+        : `默认测试配置：Base URL=${BASE_URL_TEST_ENDPOINT}，API Key=${BASE_URL_TEST_API_KEY}；可按需覆盖。`;
 
   const draftingProgressItems = nextSteps
     .filter((item) => String(item.sub_chapter_id || "").trim())
@@ -1410,7 +1669,7 @@ function App() {
     {
       key: "model",
       label: "模型名称",
-      ready: Boolean(String(inputsForm.model || "").trim()),
+      ready: !inputValidation.fieldErrors.model,
       hint: "需与供应商和密钥匹配",
     },
     {
@@ -1419,13 +1678,26 @@ function App() {
       ready: Number(inputsForm.paper_search_limit) >= 1 && Number(inputsForm.paper_search_limit) <= 300,
       hint: "按需填写即可，系统支持较大的检索数量",
     },
-    ...(inputsForm.model_provider === "base_url"
+    {
+      key: "image_descriptions",
+      label: "图片描述列表",
+      ready: !inputValidation.fieldErrors.image_descriptions,
+      hint: inputsForm.image_descriptions.length > 0
+        ? `已录入 ${inputsForm.image_descriptions.length} 条图片描述`
+        : "可选；如需插图规划，可逐行新增描述",
+    },
+    ...((inputsForm.model_provider === "base_url" || inputsForm.model_provider === "openrouter" || inputsForm.model_provider === "anthropic")
       ? [
           {
             key: "base_url",
             label: "服务地址格式",
             ready: !String(inputsForm.base_url || "").trim() || isValidHttpUrl(inputsForm.base_url),
-            hint: "使用自定义服务时建议填写有效 URL",
+            hint:
+              inputsForm.model_provider === "anthropic"
+                ? "Anthropic 格式支持自定义网关 URL"
+                : inputsForm.model_provider === "openrouter"
+                  ? "OpenRouter 支持自定义网关 URL"
+                  : `默认测试地址：${BASE_URL_TEST_ENDPOINT}`,
           },
         ]
       : []),
@@ -1805,7 +2077,7 @@ function App() {
         <div key={page} className="page-transition">
 
         {page === "projects" && (
-          <section className="panel view-panel">
+          <section className="panel view-panel view-panel-flat">
             <h3>项目管理</h3>
             <div className="project-grid">
               <label className="field project-field">
@@ -1863,7 +2135,7 @@ function App() {
         )}
 
         {page === "inputs" && (
-          <section className="panel view-panel">
+          <section className="panel view-panel view-panel-flat">
             <h3>写作参数设置</h3>
             <p className="section-help">带 * 的字段为必填项。论文标题可留空，流程会自动补全。API 密钥按当前供应商只需填写一项，填写后点击“立即保存参数”，系统会自动更新状态。</p>
             <div
@@ -1953,53 +2225,89 @@ function App() {
                       title="model_provider"
                       value={inputsForm.model_provider}
                       onChange={(e) => {
-                        const previousProvider = inputsForm.model_provider;
-                        const value = e.target.value === "doubao"
+                        const value: ModelProvider = e.target.value === "doubao"
                           ? "doubao"
                           : e.target.value === "openrouter"
                             ? "openrouter"
+                            : e.target.value === "anthropic"
+                              ? "anthropic"
                             : "base_url";
                         updateForm("model_provider", value);
-                        if (value === "doubao" && previousProvider !== "doubao") {
+                        if (value === "doubao") {
                           updateForm("model", DOUBAO_DEFAULT_MODEL);
+                        } else {
+                          updateForm("model", DEFAULT_PROVIDER_MODEL[value]);
+                        }
+                        if (value === "base_url" && !String(inputsForm.base_url || "").trim()) {
+                          updateForm("base_url", BASE_URL_TEST_ENDPOINT);
+                        }
+                        if (value === "base_url" && !String(inputsForm.model_api_key || "").trim()) {
+                          updateForm("model_api_key", BASE_URL_TEST_API_KEY);
                         }
                         if (value === "openrouter" && !String(inputsForm.base_url || "").trim()) {
                           updateForm("base_url", "https://openrouter.ai/api/v1");
+                        }
+                        if (value === "anthropic" && !String(inputsForm.base_url || "").trim()) {
+                          updateForm("base_url", ANTHROPIC_DEFAULT_BASE_URL);
                         }
                       }}
                     >
                       <option value="base_url">自定义 Base URL</option>
                       <option value="doubao">豆包 Ark</option>
                       <option value="openrouter">OpenRouter</option>
+                      <option value="anthropic">Anthropic 格式</option>
                     </select>
-                    <small className="field-help">用于决定请求路由：自定义地址、豆包官方通道或 OpenRouter。</small>
+                    <small className="field-help">用于决定请求路由：Base URL、豆包、OpenRouter 或 Anthropic。</small>
                   </label>
 
                   <label className={inputValidation.fieldErrors.model ? "field has-error" : "field"}>
                     <span>使用模型名称 <b className="required-mark">*</b></span>
-                    <input
+                    <select
                       className={inputValidation.fieldErrors.model ? "input-invalid" : ""}
                       title="model"
-                      placeholder="模型名称"
-                      value={inputsForm.model}
+                      value={providerSelectedModel}
                       onChange={(e) => updateForm("model", e.target.value)}
-                    />
+                    >
+                      {providerModelOptions.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
                     {inputValidation.fieldErrors.model && <small className="field-error">{inputValidation.fieldErrors.model}</small>}
-                    <small className="field-help">例如：doubao-seed-2-0-pro-260215。与后面的 API 密钥和服务地址对应。</small>
+                    <small className="field-help">
+                      {isDoubaoProvider
+                        ? "豆包固定两项：doubao-seed-2-0-pro-260215 / doubao-seed-2-0-mini-260215"
+                        : isAnthropicProvider
+                          ? "Anthropic 固定两项：claude-opus-4-6 / claude-opus-4-6-20260205"
+                          : isOpenRouterProvider
+                            ? "OpenRouter 当前复用 Base URL 固定模型列表。"
+                            : "Base URL 固定两项：claude-sonnet-4-5-20250929-thinking / gemini-3.1-pro"}
+                    </small>
                   </label>
 
-                  {inputsForm.model_provider === "base_url" && (
+                  {(inputsForm.model_provider === "base_url" || inputsForm.model_provider === "openrouter" || inputsForm.model_provider === "anthropic") && (
                     <label className={inputValidation.fieldErrors.base_url ? "field has-error" : "field"}>
                       <span>模型服务地址（可选）</span>
                       <input
                         className={inputValidation.fieldErrors.base_url ? "input-invalid" : ""}
                         title="base_url"
-                        placeholder="例如 http://localhost:8000/v1"
+                        placeholder={
+                          inputsForm.model_provider === "openrouter"
+                            ? "例如 https://openrouter.ai/api/v1"
+                            : inputsForm.model_provider === "anthropic"
+                              ? "例如 https://api.anthropic.com"
+                              : `默认 ${BASE_URL_TEST_ENDPOINT}`
+                        }
                         value={inputsForm.base_url}
                         onChange={(e) => updateForm("base_url", e.target.value)}
                       />
                       {inputValidation.fieldErrors.base_url && <small className="field-error">{inputValidation.fieldErrors.base_url}</small>}
-                      <small className="field-help">仅在你使用自建或代理模型服务时填写。</small>
+                      <small className="field-help">
+                        {inputsForm.model_provider === "openrouter"
+                          ? "可改为自定义 OpenRouter 网关地址。"
+                          : inputsForm.model_provider === "anthropic"
+                            ? "支持官方 Anthropic 或兼容 Anthropic /v1/messages 的网关地址。"
+                            : `默认使用测试地址 ${BASE_URL_TEST_ENDPOINT}。`}
+                      </small>
                     </label>
                   )}
 
@@ -2067,7 +2375,7 @@ function App() {
                     </span>
                     <input
                       title="openalex_api_key"
-                      placeholder="可为空"
+                      placeholder="可选"
                       value={inputsForm.openalex_api_key}
                       onChange={(e) => updateForm("openalex_api_key", e.target.value)}
                     />
@@ -2076,6 +2384,69 @@ function App() {
                 </div>
               </section>
             </div>
+
+            <section className={inputValidation.fieldErrors.image_descriptions ? "settings-group settings-group-wide image-settings-group has-error" : "settings-group settings-group-wide image-settings-group"}>
+              <h4>图片描述列表（可选）</h4>
+              <div className="image-description-editor">
+                {inputsForm.image_descriptions.length === 0 && (
+                  <div className="image-empty-hint">当前还没有图片描述。点击下方按钮可按行新增。</div>
+                )}
+
+                {inputsForm.image_descriptions.length > 0 && (
+                  <div className="image-description-grid">
+                    {inputsForm.image_descriptions.map((item, index) => (
+                      <article key={`image-description-${index}`} className="image-description-row">
+                        <div className="image-row-head">
+                          <strong>图片 {index + 1}</strong>
+                          <button
+                            type="button"
+                            className="btn ghost btn-mini"
+                            onClick={() => removeImageDescriptionRow(index)}
+                          >
+                            删除
+                          </button>
+                        </div>
+
+                        <label className="field">
+                          <span>图标题（可选）</span>
+                          <input
+                            title={`image_title_${index + 1}`}
+                            placeholder="例如：性能对比图"
+                            value={item.title}
+                            onChange={(e) => updateImageDescriptionRow(index, "title", e.target.value)}
+                          />
+                        </label>
+
+                        <label className="field">
+                          <span>图片详细描述</span>
+                          <textarea
+                            title={`image_detailed_description_${index + 1}`}
+                            rows={4}
+                            placeholder="请尽量描述图中元素、坐标轴、变量关系、趋势与标注要求..."
+                            value={item.detailed_description}
+                            onChange={(e) => updateImageDescriptionRow(index, "detailed_description", e.target.value)}
+                          />
+                        </label>
+                      </article>
+                    ))}
+                  </div>
+                )}
+
+                <div className="image-editor-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={addImageDescriptionRow}
+                  >
+                    + 新增图片描述
+                  </button>
+                </div>
+              </div>
+              {inputValidation.fieldErrors.image_descriptions && (
+                <small className="field-error">{inputValidation.fieldErrors.image_descriptions}</small>
+              )}
+              <small className="field-help">每行显示 3 张图卡；仅填写标题不会生效，至少补充“图片详细描述”后才会参与后续规划与写作。</small>
+            </section>
 
             <div className="action-buttons">
               <button className="btn" onClick={refreshInputs}>重新加载参数</button>
@@ -2119,7 +2490,7 @@ function App() {
         )}
 
         {page === "outputs" && (
-          <section className="panel view-panel">
+          <section className="panel view-panel view-panel-flat">
             <div className="section-title-row">
               <h3>结果查看（只读）</h3>
               <div className="status-chip-row">
@@ -2611,7 +2982,7 @@ function App() {
         )}
 
         {page === "about" && (
-          <section className="panel view-panel">
+          <section className="panel view-panel view-panel-flat">
             <h3>关于 ThesisLoom</h3>
             <p className="section-help">论文写作全流程人机协作系统（Desktop + Local Backend）。</p>
 

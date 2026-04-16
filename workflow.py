@@ -19,6 +19,7 @@ from core.nodes import (
     node_research_gaps,
     node_architect,
     node_architecture_review,
+    node_image_planner,
     node_planner,
     node_chapter_header,
     node_chapter_opening,
@@ -187,6 +188,32 @@ def _append_event(level: str, message: str, **extra: Any) -> None:
         "message": str(message),
     }
     payload.update(extra)
+
+    try:
+        runtime_payload = _read_runtime_payload()
+    except Exception:
+        runtime_payload = {}
+
+    runtime_status = str(runtime_payload.get("status", "")).strip()
+    if runtime_status and (not str(payload.get("runtime_status", "")).strip()):
+        payload["runtime_status"] = runtime_status
+
+    runtime_phase = str(runtime_payload.get("phase", "")).strip()
+    if runtime_phase and (not str(payload.get("phase", "")).strip()):
+        payload["phase"] = runtime_phase
+
+    runtime_node = str(runtime_payload.get("node", "")).strip()
+    if runtime_node and (not str(payload.get("node", "")).strip()):
+        payload["node"] = runtime_node
+
+    runtime_mode = str(runtime_payload.get("interaction_mode", "")).strip()
+    if runtime_mode and (not str(payload.get("interaction_mode", "")).strip()):
+        payload["interaction_mode"] = runtime_mode
+
+    runtime_pending_action = str(runtime_payload.get("pending_action", "")).strip()
+    if runtime_pending_action and (not str(payload.get("pending_action", "")).strip()):
+        payload["pending_action"] = runtime_pending_action
+
     events_file = _events_file()
     os.makedirs(os.path.dirname(events_file), exist_ok=True)
     with open(events_file, "a", encoding="utf-8") as f:
@@ -911,12 +938,25 @@ def _infer_resume_phase(state: PaperWriterState) -> str:
         return "review_pending"
 
     outline = _coerce_outline_list(getattr(state, "outline", []))
+    pre_done_related_confirm = bool(getattr(state, "pre_done_related_confirm", False))
+    pre_done_research_gaps = bool(getattr(state, "pre_done_research_gaps", False))
     if outline:
-        return "drafting"
+        if not (
+            current_phase == "pre_research"
+            and (not completed_sub_ids)
+            and (not pre_done_related_confirm)
+            and (not pre_done_research_gaps)
+        ):
+            return "drafting"
 
     has_research_gaps = bool(str(getattr(state, "research_gaps", "") or "").strip())
-    if has_research_gaps or bool(getattr(state, "pre_done_research_gaps", False)):
-        return "drafting"
+    if has_research_gaps or pre_done_research_gaps:
+        if not (
+            current_phase == "pre_research"
+            and (not completed_sub_ids)
+            and (not pre_done_research_gaps)
+        ):
+            return "drafting"
 
     pending_action = str(getattr(state, "pending_action", "") or "").strip()
     if pending_action == "enter_reviewing":
@@ -952,6 +992,14 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
             state.outline = cleaned
             notes.append("outline_cleaned")
 
+    current_phase = str(getattr(state, "workflow_phase", "") or "").strip().lower()
+    completed_sub_ids = _completed_sub_id_set(state)
+    has_drafting_progress = bool(completed_sub_ids)
+    has_drafting_or_later_markers = (
+        has_drafting_progress
+        or current_phase in {"drafting", "review_pending", "reviewing", "done"}
+    )
+
     has_valid_topic = str(getattr(state, "topic", "") or "").strip().lower() not in {"", "auto_title_pending", "未提供", "none", "n/a", "null"}
     if has_valid_topic and state.enable_auto_title is None:
         state.enable_auto_title = False
@@ -982,7 +1030,12 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
         notes.append("enable_search_inferred_true")
 
     related_works_text = str(getattr(state, "related_works_summary", "") or "").strip()
-    if not related_works_text:
+    allow_related_works_file_restore = (
+        has_drafting_or_later_markers
+        or bool(getattr(state, "pre_done_paper_search", False))
+        or bool(getattr(state, "pre_done_related_confirm", False))
+    )
+    if (not related_works_text) and allow_related_works_file_restore:
         related_works_path = str(getattr(state, "related_works_path", "") or "").strip()
         if related_works_path and os.path.exists(related_works_path):
             related_works_text = _read_text(related_works_path)
@@ -990,7 +1043,12 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
                 state.related_works_summary = related_works_text
                 notes.append("related_works_summary_restored")
 
-    if bool(state.enable_paper_search) and related_works_text and (not bool(getattr(state, "pre_done_paper_search", False))):
+    if (
+        bool(state.enable_paper_search)
+        and related_works_text
+        and has_drafting_or_later_markers
+        and (not bool(getattr(state, "pre_done_paper_search", False)))
+    ):
         state.pre_done_paper_search = True
         notes.append("paper_search_marked_done")
 
@@ -998,14 +1056,21 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
     if (
         (not bool(getattr(state, "pre_done_related_confirm", False)))
         and (remembered_related_confirm is not None)
-        and (bool(getattr(state, "pre_done_paper_search", False)) or bool(related_works_text))
+        and (
+            bool(getattr(state, "pre_done_paper_search", False))
+            or (bool(related_works_text) and has_drafting_or_later_markers)
+        )
     ):
         state.pre_done_related_confirm = True
         state.wait_for_manual_related_works = False
         notes.append("related_works_confirm_restored_from_memory")
 
     research_gaps_text = str(getattr(state, "research_gaps", "") or "").strip()
-    if not research_gaps_text:
+    allow_research_gaps_file_restore = (
+        has_drafting_or_later_markers
+        or bool(getattr(state, "pre_done_research_gaps", False))
+    )
+    if (not research_gaps_text) and allow_research_gaps_file_restore:
         rg_file = str(getattr(state, "research_gap_output_path", "") or "").strip()
         if rg_file and os.path.exists(rg_file) and os.path.getsize(rg_file) > 0:
             state.research_gaps = _read_text(rg_file)
@@ -1013,12 +1078,14 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
             if research_gaps_text:
                 notes.append("research_gaps_restored_from_file")
 
-    if research_gaps_text and (not bool(getattr(state, "pre_done_research_gaps", False))):
+    if (
+        research_gaps_text
+        and has_drafting_or_later_markers
+        and (not bool(getattr(state, "pre_done_research_gaps", False)))
+    ):
         state.pre_done_research_gaps = True
         notes.append("research_gaps_marked_done")
 
-    completed_sub_ids = _completed_sub_id_set(state)
-    has_drafting_progress = bool(completed_sub_ids)
     if has_drafting_progress and state.enable_paper_search is None:
         if isinstance(remembered_search, dict) and ("value" in remembered_search):
             state.enable_paper_search = bool(remembered_search.get("value", False))
@@ -1037,7 +1104,7 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
 
     pending_action = str(getattr(state, "pending_action", "") or "").strip()
     if pending_action in {"confirm_inputs_ready", "set_enable_auto_title", "set_enable_search", "confirm_related_works"}:
-        if has_drafting_progress or bool(normalized_outline) or bool(research_gaps_text):
+        if has_drafting_or_later_markers or bool(getattr(state, "pre_done_research_gaps", False)):
             state.pending_action = ""
             state.pending_action_message = ""
             notes.append("stale_pending_action_cleared")
@@ -1054,7 +1121,12 @@ def _repair_resume_state(state: PaperWriterState) -> list[str]:
         state.architecture_passed = True
         notes.append("architecture_force_continue_restored_from_memory")
 
-    if normalized_outline and (not bool(getattr(state, "architecture_passed", False))) and pending_action != "set_architecture_force_continue":
+    if (
+        normalized_outline
+        and (not bool(getattr(state, "architecture_passed", False)))
+        and pending_action != "set_architecture_force_continue"
+        and (has_drafting_or_later_markers or bool(getattr(state, "pre_done_research_gaps", False)))
+    ):
         state.architecture_passed = True
         notes.append("architecture_passed_inferred")
 
@@ -1537,6 +1609,32 @@ def run_workflow(stop_event: Optional[Event] = None, interaction_mode: str = "we
         if len(state.outline) > 12:
             print(f"| [WARN] 架构输出章节数异常({len(state.outline)})，已自动截断到前12个大章节。")
             state.outline = state.outline[:12]
+
+        if not bool(getattr(state, "image_planning_done", False)):
+            has_completed_sections = bool(_completed_sub_id_set(state))
+            has_major_planner_cache = any(
+                _major_has_planner_cache(major)
+                for major in state.outline
+                if isinstance(major, dict)
+            )
+
+            if has_completed_sections or has_major_planner_cache:
+                state.image_planning_done = True
+                if not bool(getattr(state, "planned_image_descriptions", [])):
+                    state.planned_image_descriptions = list(getattr(state, "image_descriptions", []))
+                print("| [Resume] 检测到已有正文/规划进度，跳过图片规划节点。")
+                _checkpoint(state, checkpoint_path, reason="image_planner_skipped_resume_cache", node="drafting")
+            else:
+                state = _timed_call(
+                    "node_image_planner",
+                    "node_image_planner",
+                    str(getattr(state, "workflow_phase", "")),
+                    node_image_planner,
+                    state,
+                )
+                _checkpoint(state, checkpoint_path, reason="node_image_planner_done", node="node_image_planner")
+        else:
+            print("| [ImagePlanner] 已有规划结果，跳过图片规划节点。")
 
         writing_queue = sorted(state.outline, key=lambda x: int((x or {}).get("writing_order", 999) or 999))
         done_sub_ids = _completed_sub_id_set(state)
