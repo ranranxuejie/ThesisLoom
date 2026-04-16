@@ -59,6 +59,10 @@ export interface WorkflowStateSnapshot {
   }>;
   architect_outline?: Array<Record<string, unknown>>;
   planner_outputs?: Array<Record<string, unknown>>;
+  user_image_descriptions?: Array<Record<string, unknown>>;
+  planned_image_descriptions?: Array<Record<string, unknown>>;
+  image_planning_done?: boolean;
+  image_planning_summary?: string;
   overall_review_summary?: string;
   overall_review_plans?: Array<Record<string, unknown>>;
   major_review_items?: Array<Record<string, unknown>>;
@@ -81,6 +85,11 @@ export interface WorkflowStateSnapshot {
   token_usage?: {
     total_input_tokens?: number;
     total_output_tokens?: number;
+    total_input_cost_usd?: number;
+    total_output_cost_usd?: number;
+    total_cost_usd?: number;
+    pricing_source?: string;
+    pricing_currency?: string;
     [key: string]: unknown;
   };
   workflow_metrics?: {

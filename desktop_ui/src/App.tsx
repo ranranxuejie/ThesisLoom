@@ -25,6 +25,26 @@ type OutputTab = "paper" | "pipeline";
 type ModelProvider = "base_url" | "doubao" | "openrouter" | "anthropic";
 type TutorialPopoverPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
+function resolveInitialPageFromUrl(): PageKey {
+  if (typeof window === "undefined") {
+    return "workflow";
+  }
+
+  const page = String(new URLSearchParams(window.location.search).get("page") || "").trim().toLowerCase();
+  if (page === "projects" || page === "inputs" || page === "outputs" || page === "workflow" || page === "about") {
+    return page;
+  }
+  return "workflow";
+}
+
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const tauriWindow = window as typeof window & { __TAURI_INTERNALS__?: unknown };
+  return Boolean(tauriWindow.__TAURI_INTERNALS__);
+}
+
 const APP_VERSION = String((packageJson as { version?: string }).version || "0.1.0");
 const TUTORIAL_DISMISSED_KEY = "thesisloom:tutorial-dismissed";
 
@@ -69,15 +89,41 @@ const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 const PROVIDER_MODEL_OPTIONS: Record<ModelProvider, readonly string[]> = {
   base_url: ["claude-sonnet-4-5-20250929-thinking", "gemini-3.1-pro"],
   doubao: ["doubao-seed-2-0-pro-260215", "doubao-seed-2-0-mini-260215"],
-  openrouter: ["claude-sonnet-4-5-20250929-thinking", "gemini-3.1-pro"],
+  openrouter: ["z-ai/glm-5.1", "x-ai/grok-4.20-multi-agent", "anthropic/claude-opus-4.6"],
   anthropic: ["claude-opus-4-6", "claude-opus-4-6-20260205"],
 };
 
 const DEFAULT_PROVIDER_MODEL: Record<ModelProvider, string> = {
   base_url: "gemini-3.1-pro",
   doubao: "doubao-seed-2-0-pro-260215",
-  openrouter: "gemini-3.1-pro",
+  openrouter: "z-ai/glm-5.1",
   anthropic: "claude-opus-4-6",
+};
+
+interface OpenRouterPriceConfig {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+  highTierInputPerMillionUsd?: number;
+  highTierOutputPerMillionUsd?: number;
+  tierThresholdTokens?: number;
+}
+
+const OPENROUTER_MODEL_PRICING: Record<string, OpenRouterPriceConfig> = {
+  "z-ai/glm-5.1": {
+    inputPerMillionUsd: 0.95,
+    outputPerMillionUsd: 3.15,
+  },
+  "x-ai/grok-4.20-multi-agent": {
+    inputPerMillionUsd: 2,
+    outputPerMillionUsd: 6,
+    highTierInputPerMillionUsd: 4,
+    highTierOutputPerMillionUsd: 12,
+    tierThresholdTokens: 200000,
+  },
+  "anthropic/claude-opus-4.6": {
+    inputPerMillionUsd: 5,
+    outputPerMillionUsd: 25,
+  },
 };
 
 const DEFAULT_INPUTS_FORM: InputsFormState = {
@@ -502,6 +548,61 @@ function normalizeModelForProvider(provider: ModelProvider, rawModel: unknown): 
   return DEFAULT_PROVIDER_MODEL[provider];
 }
 
+function formatUsd(value: number): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return "0.000000";
+  }
+  return num.toFixed(6);
+}
+
+function estimateOpenRouterCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): {
+  inputCostUsd: number;
+  outputCostUsd: number;
+  totalCostUsd: number;
+  inputPricePerMillionUsd: number;
+  outputPricePerMillionUsd: number;
+  pricingNote: string;
+} | null {
+  const config = OPENROUTER_MODEL_PRICING[String(model || "").trim()];
+  if (!config) {
+    return null;
+  }
+
+  let inputPrice = Number(config.inputPerMillionUsd || 0);
+  let outputPrice = Number(config.outputPerMillionUsd || 0);
+  let pricingNote = "standard";
+
+  const threshold = Number(config.tierThresholdTokens || 0);
+  if (threshold > 0) {
+    const totalTokens = Math.max(0, Number(inputTokens || 0)) + Math.max(0, Number(outputTokens || 0));
+    if (totalTokens > threshold) {
+      inputPrice = Number(config.highTierInputPerMillionUsd ?? inputPrice);
+      outputPrice = Number(config.highTierOutputPerMillionUsd ?? outputPrice);
+      pricingNote = `>${threshold} tokens tier`;
+    } else {
+      pricingNote = `<=${threshold} tokens tier`;
+    }
+  }
+
+  const inputCostUsd = (Math.max(0, Number(inputTokens || 0)) / 1_000_000) * inputPrice;
+  const outputCostUsd = (Math.max(0, Number(outputTokens || 0)) / 1_000_000) * outputPrice;
+  const totalCostUsd = inputCostUsd + outputCostUsd;
+
+  return {
+    inputCostUsd,
+    outputCostUsd,
+    totalCostUsd,
+    inputPricePerMillionUsd: inputPrice,
+    outputPricePerMillionUsd: outputPrice,
+    pricingNote,
+  };
+}
+
 function formatWorkflowLogRow(item: Record<string, unknown>, mode: LogMode): string {
   const t = String(item.time ?? "-");
   const lvl = String(item.level ?? "detail");
@@ -636,10 +737,42 @@ function displayInputFileName(path: string): string {
   return raw.replace(/^inputs[\\/]/i, "");
 }
 
+function normalizeEditableInputFilePath(path: string): string {
+  return displayInputFileName(path).replace(/\\/g, "/").toLowerCase();
+}
+
+function isGuidanceInputFile(path: string): boolean {
+  return normalizeEditableInputFilePath(path).startsWith("guidance/");
+}
+
+function isReviewInputFile(path: string): boolean {
+  return normalizeEditableInputFilePath(path).startsWith("review/");
+}
+
+function describeTemplateFile(path: string): string {
+  const normalized = normalizeEditableInputFilePath(path);
+  const fileName = normalized.split("/").pop() || normalized;
+  const stem = fileName.replace(/\.md$/i, "");
+  const preset: Record<string, string> = {
+    overall_guidance: "全局写作指导",
+    overall_review: "全局审稿规则",
+  };
+
+  return preset[stem] || stem.replace(/[_-]+/g, " ").trim();
+}
+
 function describeInputFile(path: string): string {
-  const name = displayInputFileName(path).toLowerCase();
+  const name = normalizeEditableInputFilePath(path);
   if (!name) {
     return "";
+  }
+
+  if (name.startsWith("guidance/")) {
+    return `写作 Guidance：${describeTemplateFile(path)}`;
+  }
+
+  if (name.startsWith("review/")) {
+    return `审稿 Review：${describeTemplateFile(path)}`;
   }
 
   const map: Record<string, string> = {
@@ -761,7 +894,7 @@ function composeInputsPayload(form: InputsFormState, extra: Record<string, unkno
 }
 
 function App() {
-  const [page, setPage] = useState<PageKey>("workflow");
+  const [page, setPage] = useState<PageKey>(() => resolveInitialPageFromUrl());
   const [outputTab, setOutputTab] = useState<OutputTab>("paper");
   const [outputSearchQuery, setOutputSearchQuery] = useState<string>("");
   const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => {
@@ -775,6 +908,7 @@ function App() {
   const [paperExpandToken, setPaperExpandToken] = useState(0);
   const [pipelineExpandAll, setPipelineExpandAll] = useState(false);
   const [pipelineExpandToken, setPipelineExpandToken] = useState(0);
+  const [recentlyCompletedStepKey, setRecentlyCompletedStepKey] = useState<string>("");
 
   const [backendStatus, setBackendStatus] = useState<BackendStatus>(EMPTY_BACKEND_STATUS);
   const [stateSnapshot, setStateSnapshot] = useState<WorkflowStateSnapshot | null>(null);
@@ -812,6 +946,8 @@ function App() {
   const [skipApprovalEnabled, setSkipApprovalEnabled] = useState(false);
   const skipApprovalBusyRef = useRef(false);
   const lastSkipApprovalKeyRef = useRef("");
+  const lastFlowIndexRef = useRef(0);
+  const flowAnimationBootstrappedRef = useRef(false);
   const [runtimeControlBusy, setRuntimeControlBusy] = useState(false);
   const baseUrl = API_BASE_URL;
 
@@ -1237,6 +1373,13 @@ function App() {
   }, [inputsForm, persistInputsForm, pushNotice, sendAction]);
 
   const ensureBackendStarted = useCallback(async (silent = false) => {
+    if (!isTauriRuntime()) {
+      if (!silent) {
+        pushNotice("info", "当前为浏览器模式，跳过本地后端自动拉起。 ");
+      }
+      return null;
+    }
+
     try {
       const status = await invoke<BackendStatus>("backend_status", {
         workspace_root: "",
@@ -1428,6 +1571,26 @@ function App() {
   }, [loadSelectedFile, selectedFilePath]);
 
   useEffect(() => {
+    if (page !== "inputs" || typeof window === "undefined") {
+      return;
+    }
+
+    const focus = String(new URLSearchParams(window.location.search).get("focus") || "").trim().toLowerCase();
+    if (focus !== "input-files") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById("input-files-editor");
+      if (target) {
+        target.scrollIntoView({ behavior: "auto", block: "start" });
+      }
+    }, 60);
+
+    return () => window.clearTimeout(timer);
+  }, [editableFiles.length, page]);
+
+  useEffect(() => {
     if (!tutorialOpen) {
       return;
     }
@@ -1497,6 +1660,15 @@ function App() {
   const searchQueries = stateSnapshot?.search_queries || [];
   const architectOutline = stateSnapshot?.architect_outline || [];
   const plannerOutputs = stateSnapshot?.planner_outputs || [];
+  const userImageDescriptions = asRecordArray(stateSnapshot?.user_image_descriptions);
+  const plannedImageDescriptions = asRecordArray(stateSnapshot?.planned_image_descriptions);
+  const imagePlanningDone = Boolean(stateSnapshot?.image_planning_done);
+  const imagePlanningSummary = String(stateSnapshot?.image_planning_summary || "").trim();
+  const userImageDescriptionTextSet = new Set(
+    userImageDescriptions
+      .map((item) => pickText(item, ["detailed_description", "description", "图片的超级详细的描述"], "").toLowerCase())
+      .filter((item) => Boolean(item)),
+  );
   const overallPlans = stateSnapshot?.overall_review_plans || [];
   const majorReviewItems = stateSnapshot?.major_review_items || [];
   const versionSnapshots = stateSnapshot?.version_snapshots || [];
@@ -1547,8 +1719,11 @@ function App() {
     : isAnthropicProvider
       ? "当前固定支持 Claude Opus 4.6 两个模型版本；可填写 Anthropic API 密钥后直接运行。"
       : isOpenRouterProvider
-        ? "当前仅需填写 OpenRouter API 密钥；豆包 Ark API 密钥可留空。"
+        ? "当前仅需填写 OpenRouter API 密钥；支持 GLM/Grok/Opus 模型并统计 USD token 成本。"
         : `默认测试配置：Base URL=${BASE_URL_TEST_ENDPOINT}，API Key=${BASE_URL_TEST_API_KEY}；可按需覆盖。`;
+  const baseEditableFiles = editableFiles.filter((path) => !isGuidanceInputFile(path) && !isReviewInputFile(path));
+  const guidanceEditableFiles = editableFiles.filter((path) => isGuidanceInputFile(path));
+  const reviewEditableFiles = editableFiles.filter((path) => isReviewInputFile(path));
 
   const draftingProgressItems = nextSteps
     .filter((item) => String(item.sub_chapter_id || "").trim())
@@ -1624,9 +1799,25 @@ function App() {
     .sort((a, b) => a.subId.localeCompare(b.subId, undefined, { numeric: true, sensitivity: "base" }));
   const rewriteDoneCount = rewriteProgressItems.filter((item) => item.done).length;
 
-  const tokenUsage = stateSnapshot?.token_usage || {};
+  const tokenUsage = asRecord(stateSnapshot?.token_usage) || {};
   const inputTokens = Number(tokenUsage.total_input_tokens || 0);
   const outputTokens = Number(tokenUsage.total_output_tokens || 0);
+  const recordedInputCostUsd = Number(tokenUsage.total_input_cost_usd || 0);
+  const recordedOutputCostUsd = Number(tokenUsage.total_output_cost_usd || 0);
+  const recordedTotalCostUsd = Number(tokenUsage.total_cost_usd || 0);
+  const selectedOpenRouterCost = estimateOpenRouterCost(providerSelectedModel, inputTokens, outputTokens);
+  const inputCostUsd = Number.isFinite(recordedInputCostUsd) && recordedInputCostUsd > 0
+    ? recordedInputCostUsd
+    : selectedOpenRouterCost?.inputCostUsd || 0;
+  const outputCostUsd = Number.isFinite(recordedOutputCostUsd) && recordedOutputCostUsd > 0
+    ? recordedOutputCostUsd
+    : selectedOpenRouterCost?.outputCostUsd || 0;
+  const totalCostUsd = Number.isFinite(recordedTotalCostUsd) && recordedTotalCostUsd > 0
+    ? recordedTotalCostUsd
+    : selectedOpenRouterCost?.totalCostUsd || 0;
+  const openRouterRateHint = isOpenRouterProvider && selectedOpenRouterCost
+    ? `Rate in/out: $${selectedOpenRouterCost.inputPricePerMillionUsd}/M · $${selectedOpenRouterCost.outputPricePerMillionUsd}/M (${selectedOpenRouterCost.pricingNote})`
+    : "USD cost is tracked when OpenRouter model pricing is available.";
   const currentYear = new Date().getFullYear();
   const inputValidation = validateInputsForm(inputsForm);
   const hasBlockingInputIssues = inputValidation.blockingIssues.length > 0;
@@ -1647,7 +1838,7 @@ function App() {
     return haystack.includes(outputSearchKeyword);
   });
   const pipelineArtifactTotal =
-    searchQueries.length + architectOutline.length + plannerOutputs.length + overallPlans.length + majorReviewItems.length;
+    searchQueries.length + architectOutline.length + plannerOutputs.length + plannedImageDescriptions.length + overallPlans.length + majorReviewItems.length;
   const pendingActionLabel = ACTION_LABELS[pendingAction] || pendingAction || "无";
   const completedSectionCount = Number(stateSnapshot?.completed_section_count ?? 0);
   const draftingTotalDisplay = draftingTotalCount > 0 ? draftingTotalCount : "-";
@@ -1728,6 +1919,32 @@ function App() {
     }
     return "todo";
   };
+
+  useEffect(() => {
+    if (!flowAnimationBootstrappedRef.current) {
+      flowAnimationBootstrappedRef.current = true;
+      lastFlowIndexRef.current = flowIndex;
+      return;
+    }
+
+    if (flowIndex <= lastFlowIndexRef.current) {
+      lastFlowIndexRef.current = flowIndex;
+      return;
+    }
+
+    const completedStep = FLOW_STEPS[lastFlowIndexRef.current];
+    lastFlowIndexRef.current = flowIndex;
+    if (!completedStep) {
+      return;
+    }
+
+    setRecentlyCompletedStepKey(completedStep.key);
+    const timer = window.setTimeout(() => {
+      setRecentlyCompletedStepKey((prev) => (prev === completedStep.key ? "" : prev));
+    }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, [flowIndex]);
 
   useEffect(() => {
     const action = String(stateSnapshot?.pending_action || "").trim();
@@ -2028,6 +2245,10 @@ function App() {
           <div className="line"><span>当前阶段:</span> {phaseMajor}</div>
           <div className="line"><span>Tokens(in):</span> {inputTokens.toLocaleString()}</div>
           <div className="line"><span>Tokens(out):</span> {outputTokens.toLocaleString()}</div>
+          <div className="line"><span>Cost(USD):</span> ${formatUsd(totalCostUsd)}</div>
+          {isOpenRouterProvider && (
+            <div className="line"><span>OpenRouter费率:</span> {openRouterRateHint}</div>
+          )}
         </div>
       </aside>
 
@@ -2252,7 +2473,7 @@ function App() {
                         }
                       }}
                     >
-                      <option value="base_url">自定义 Base URL</option>
+                      <option value="base_url">Openai 格式</option>
                       <option value="doubao">豆包 Ark</option>
                       <option value="openrouter">OpenRouter</option>
                       <option value="anthropic">Anthropic 格式</option>
@@ -2279,7 +2500,7 @@ function App() {
                         : isAnthropicProvider
                           ? "Anthropic 固定两项：claude-opus-4-6 / claude-opus-4-6-20260205"
                           : isOpenRouterProvider
-                            ? "OpenRouter 当前复用 Base URL 固定模型列表。"
+                            ? "OpenRouter 固定三项：z-ai/glm-5.1 / x-ai/grok-4.20-multi-agent / anthropic/claude-opus-4.6"
                             : "Base URL 固定两项：claude-sonnet-4-5-20250929-thinking / gemini-3.1-pro"}
                     </small>
                   </label>
@@ -2457,34 +2678,85 @@ function App() {
               <span>{autoSaveHint}</span>
             </div>
 
-            <h3>输入资料文件（可直接编辑）</h3>
-            <p className="section-help">这里用于填写素材、已有章节、相关研究和改写要求，系统会按文件用途自动读取。</p>
-            <div className="file-tabs">
-              {editableFiles.map((path) => (
-                <button
-                  key={path}
-                  className={path === selectedFilePath ? "tab active" : "tab"}
-                  onClick={() => loadSelectedFile(path)}
-                >
-                  {describeInputFile(path)}
-                </button>
-              ))}
-            </div>
+            <div id="input-files-editor" className="input-files-editor">
+              <h3>输入资料文件（可直接编辑）</h3>
+              <p className="section-help">这里用于填写素材、已有章节、相关研究和改写要求，系统会按文件用途自动读取。</p>
+              <div className="file-tab-group">
+              <div className="line file-tab-group-title"><span>基础输入文件:</span> {baseEditableFiles.length} 个</div>
+              <div className="file-tabs">
+                {baseEditableFiles.map((path) => (
+                  <button
+                    key={path}
+                    className={path === selectedFilePath ? "tab active" : "tab"}
+                    onClick={() => loadSelectedFile(path)}
+                  >
+                    {describeInputFile(path)}
+                  </button>
+                ))}
+              </div>
+              </div>
 
-            <div className="line"><span>当前编辑内容:</span> {describeInputFile(selectedFilePath) || "-"}</div>
-            <textarea
-              title="selected input file editor"
-              className="input-file-textarea"
-              placeholder="在这里编辑所选输入文件"
-              value={selectedFileContent}
-              onChange={(e) => setSelectedFileContent(e.target.value)}
-              onBlur={() => {
-                void saveSelectedFile(true);
-              }}
-            />
-            <div className="action-buttons">
-              <button className="btn" onClick={() => loadSelectedFile(selectedFilePath)}>重新加载文件</button>
-              <button className="btn major" onClick={() => void saveSelectedFile(false)}>保存当前文件</button>
+              {guidanceEditableFiles.length > 0 && (
+                <details className="fold-block input-template-fold">
+                  <summary>
+                    <span>Guidance 模板（默认折叠）</span>
+                    <small>{guidanceEditableFiles.length} 个可编辑文件</small>
+                  </summary>
+                  <div className="input-template-fold-body">
+                    <small className="fold-meta">展开后可自定义写作指导模板内容（inputs/guidance）。</small>
+                    <div className="file-tabs file-tabs-nested">
+                      {guidanceEditableFiles.map((path) => (
+                        <button
+                          key={path}
+                          className={path === selectedFilePath ? "tab active" : "tab"}
+                          onClick={() => loadSelectedFile(path)}
+                        >
+                          {describeInputFile(path)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              )}
+
+              {reviewEditableFiles.length > 0 && (
+                <details className="fold-block input-template-fold">
+                  <summary>
+                    <span>Review 模板（默认折叠）</span>
+                    <small>{reviewEditableFiles.length} 个可编辑文件</small>
+                  </summary>
+                  <div className="input-template-fold-body">
+                    <small className="fold-meta">展开后可自定义审稿规则模板内容（inputs/review）。</small>
+                    <div className="file-tabs file-tabs-nested">
+                      {reviewEditableFiles.map((path) => (
+                        <button
+                          key={path}
+                          className={path === selectedFilePath ? "tab active" : "tab"}
+                          onClick={() => loadSelectedFile(path)}
+                        >
+                          {describeInputFile(path)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              )}
+
+              <div className="line"><span>当前编辑内容:</span> {describeInputFile(selectedFilePath) || "-"}</div>
+              <textarea
+                title="selected input file editor"
+                className="input-file-textarea"
+                placeholder="在这里编辑所选输入文件"
+                value={selectedFileContent}
+                onChange={(e) => setSelectedFileContent(e.target.value)}
+                onBlur={() => {
+                  void saveSelectedFile(true);
+                }}
+              />
+              <div className="action-buttons">
+                <button className="btn" onClick={() => loadSelectedFile(selectedFilePath)}>重新加载文件</button>
+                <button className="btn major" onClick={() => void saveSelectedFile(false)}>保存当前文件</button>
+              </div>
             </div>
           </section>
         )}
@@ -2496,6 +2768,7 @@ function App() {
               <div className="status-chip-row">
                 <span className="status-chip neutral">正文 {paperOutputs.length} 节</span>
                 <span className="status-chip neutral">过程产物 {pipelineArtifactTotal} 条</span>
+                <span className="status-chip neutral">图片规划 {plannedImageDescriptions.length} 条</span>
               </div>
             </div>
             <p className="section-help">左侧查看正文内容，右侧查看系统过程产物（检索、规划与审稿建议）。</p>
@@ -2510,6 +2783,11 @@ function App() {
                 <span>检索关键词</span>
                 <strong>{searchQueries.length}</strong>
                 <small>用于文献检索与研究空白分析</small>
+              </article>
+              <article className="output-stat-card">
+                <span>图片规划结果</span>
+                <strong>{plannedImageDescriptions.length}</strong>
+                <small>{imagePlanningDone ? "图片规划节点已执行" : "图片规划节点尚未执行"}</small>
               </article>
               <article className="output-stat-card">
                 <span>审稿/改写项</span>
@@ -2639,6 +2917,58 @@ function App() {
                                 })}
                               </ul>
                             )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </details>
+
+                <details
+                  className="fold-block"
+                  key={`pipeline-image-planner-${pipelineExpandToken}`}
+                  open={pipelineExpandAll ? true : undefined}
+                >
+                  <summary>图片规划节点结果（{plannedImageDescriptions.length} 条）</summary>
+                  <div className="fold-actions">
+                    <span className="fold-meta">
+                      {imagePlanningSummary || (imagePlanningDone ? "图片规划节点已执行。" : "图片规划节点尚未执行。")}
+                    </span>
+                    {plannedImageDescriptions.length > 0 && (
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          void copyTextToClipboard(
+                            JSON.stringify(plannedImageDescriptions, null, 2),
+                            "图片规划结果已复制",
+                          )
+                        }
+                      >
+                        复制图片规划 JSON
+                      </button>
+                    )}
+                  </div>
+                  {plannedImageDescriptions.length === 0 ? (
+                    <div className="empty-tip">暂无图片规划结果。</div>
+                  ) : (
+                    <div className="schema-stack">
+                      {plannedImageDescriptions.map((item, idx) => {
+                        const imageId = pickText(item, ["image_id"], `IMG-${idx + 1}`);
+                        const title = pickText(item, ["title", "sub_title"], "(untitled)");
+                        const detail = pickText(
+                          item,
+                          ["detailed_description", "description", "图片的超级详细的描述"],
+                          "-",
+                        );
+                        const fromUser = userImageDescriptionTextSet.has(detail.toLowerCase());
+                        return (
+                          <article key={`planned-image-${imageId}-${idx}`} className="schema-card">
+                            <h4>{imageId} {title}</h4>
+                            <div className="schema-meta-row">
+                              <span className="tag-chip">来源：{fromUser ? "用户输入" : "模型补充"}</span>
+                              <span className="tag-chip">序号：{idx + 1}</span>
+                            </div>
+                            <p className="schema-subtext">{detail}</p>
                           </article>
                         );
                       })}
@@ -2787,6 +3117,14 @@ function App() {
                   审稿轮次 {reviewRoundTag || reviewRound} · 已完成改写 {rewriteDoneCount}/{rewriteProgressItems.length}
                 </small>
               </article>
+
+              <article className="workflow-kpi-card">
+                <span>Token 成本 (USD)</span>
+                <strong>${formatUsd(totalCostUsd)}</strong>
+                <small>
+                  in ${formatUsd(inputCostUsd)} · out ${formatUsd(outputCostUsd)}
+                </small>
+              </article>
             </section>
 
             {reviewRoundTag && (
@@ -2812,12 +3150,34 @@ function App() {
 
             <section className="panel-block">
               <h3>流程视图</h3>
+              <div className={runtimeIsRunning ? "workflow-live-banner is-running" : "workflow-live-banner"}>
+                <div className="workflow-live-head">
+                  <span className="workflow-live-dot" />
+                  <strong>{runtimeIsRunning ? "流程正在执行中" : "流程当前未运行"}</strong>
+                </div>
+                <small>
+                  {runtimeIsRunning
+                    ? `当前节点：${NODE_LABELS[currentNode] || currentNode || "-"}`
+                    : "点击顶部“继续流程”即可启动执行。"}
+                </small>
+                {runtimeIsRunning && (
+                  <div className="workflow-live-wave" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                )}
+              </div>
               <div className="phase-track">
                 {FLOW_STEPS.map((step, idx) => {
                   const status = resolveStepStatus(idx);
                   const displayTitle = isReviewFlowStep(step.key) && reviewRoundTag ? `${step.title}${reviewRoundTag}` : step.title;
                   return (
-                    <div key={`${step.key}-track`} className={`phase-track-item ${status}`}>
+                    <div
+                      key={`${step.key}-track`}
+                      className={`phase-track-item ${status}${step.key === recentlyCompletedStepKey ? " just-completed" : ""}${status === "current" && runtimeIsRunning ? " running" : ""}`}
+                    >
                       <div className="phase-track-dot" />
                       <span>{displayTitle}</span>
                       {idx < FLOW_STEPS.length - 1 && <i className={status === "done" ? "phase-track-line done" : "phase-track-line"} />}
@@ -2830,8 +3190,11 @@ function App() {
                   const status = resolveStepStatus(idx);
                   const displayTitle = isReviewFlowStep(step.key) && reviewRoundTag ? `${step.title}${reviewRoundTag}` : step.title;
                   return (
-                    <div key={step.key} className={`flow-item ${status}`}>
-                      <div className="marker">{status === "done" ? "✓" : status === "current" ? "▶" : "○"}</div>
+                    <div
+                      key={step.key}
+                      className={`flow-item ${status}${step.key === recentlyCompletedStepKey ? " just-completed" : ""}${status === "current" && runtimeIsRunning ? " running" : ""}`}
+                    >
+                      <div className="marker">{status === "done" ? "✓" : status === "current" ? (runtimeIsRunning ? "..." : "▶") : "○"}</div>
                       <div>
                         <div className="flow-title-row">
                           <strong>{displayTitle}</strong>

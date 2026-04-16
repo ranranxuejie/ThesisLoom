@@ -27,8 +27,9 @@ _ALLOWED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
         "doubao-seed-2-0-mini-260215",
     ),
     "openrouter": (
-        "claude-sonnet-4-5-20250929-thinking",
-        "gemini-3.1-pro",
+        "z-ai/glm-5.1",
+        "x-ai/grok-4.20-multi-agent",
+        "anthropic/claude-opus-4.6",
     ),
     "anthropic": (
         "claude-opus-4-6",
@@ -39,9 +40,79 @@ _ALLOWED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
 _DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
     "base_url": "gemini-3.1-pro",
     "doubao": "doubao-seed-2-0-pro-260215",
-    "openrouter": "gemini-3.1-pro",
+    "openrouter": "z-ai/glm-5.1",
     "anthropic": "claude-opus-4-6",
 }
+
+
+_OPENROUTER_PRICING_SOURCE = "openrouter_model_page"
+_OPENROUTER_GROK_TIER_THRESHOLD_TOKENS = 200000
+_OPENROUTER_MODEL_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
+    # Source: https://openrouter.ai/models (model pages)
+    "z-ai/glm-5.1": {
+        "input": 0.95,
+        "output": 3.15,
+    },
+    "x-ai/grok-4.20-multi-agent": {
+        "input": 2.0,
+        "output": 6.0,
+        "input_high_tier": 4.0,
+        "output_high_tier": 12.0,
+    },
+    "anthropic/claude-opus-4.6": {
+        "input": 5.0,
+        "output": 25.0,
+    },
+}
+
+
+def _resolve_openrouter_prices_per_million(model: str, input_tokens: int, output_tokens: int) -> tuple[float, float, str]:
+    model_key = str(model or "").strip()
+    config = _OPENROUTER_MODEL_PRICES_USD_PER_MILLION.get(model_key)
+    if not isinstance(config, dict):
+        return 0.0, 0.0, ""
+
+    input_price = float(config.get("input", 0.0) or 0.0)
+    output_price = float(config.get("output", 0.0) or 0.0)
+    note = "standard"
+
+    if model_key == "x-ai/grok-4.20-multi-agent":
+        total_tokens = max(0, int(input_tokens)) + max(0, int(output_tokens))
+        if total_tokens > _OPENROUTER_GROK_TIER_THRESHOLD_TOKENS:
+            input_price = float(config.get("input_high_tier", input_price) or input_price)
+            output_price = float(config.get("output_high_tier", output_price) or output_price)
+            note = ">200K tier"
+        else:
+            note = "<=200K tier"
+
+    return input_price, output_price, note
+
+
+def _calculate_openrouter_cost_usd(model: str, input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    input_price, output_price, tier_note = _resolve_openrouter_prices_per_million(model, input_tokens, output_tokens)
+    if input_price <= 0 and output_price <= 0:
+        return {
+            "input_cost_usd": 0.0,
+            "output_cost_usd": 0.0,
+            "total_cost_usd": 0.0,
+            "input_price_per_million_usd": 0.0,
+            "output_price_per_million_usd": 0.0,
+            "pricing_note": "",
+        }
+
+    in_tokens = max(0, int(input_tokens))
+    out_tokens = max(0, int(output_tokens))
+    input_cost = (in_tokens / 1_000_000.0) * input_price
+    output_cost = (out_tokens / 1_000_000.0) * output_price
+    total_cost = input_cost + output_cost
+    return {
+        "input_cost_usd": float(input_cost),
+        "output_cost_usd": float(output_cost),
+        "total_cost_usd": float(total_cost),
+        "input_price_per_million_usd": float(input_price),
+        "output_price_per_million_usd": float(output_price),
+        "pricing_note": tier_note,
+    }
 
 
 def _normalize_model_by_provider(provider: str, requested_model: str) -> tuple[str, bool]:
@@ -84,38 +155,110 @@ def _token_usage_file() -> str:
 def _read_token_usage() -> dict:
     path = _token_usage_file()
     if not os.path.exists(path):
-        return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "history": []}
+        return {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_input_cost_usd": 0.0,
+            "total_output_cost_usd": 0.0,
+            "total_cost_usd": 0.0,
+            "call_count": 0,
+            "history": [],
+            "pricing_source": _OPENROUTER_PRICING_SOURCE,
+            "pricing_currency": "USD",
+        }
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             data.setdefault("total_input_tokens", 0)
             data.setdefault("total_output_tokens", 0)
+            data.setdefault("total_input_cost_usd", 0.0)
+            data.setdefault("total_output_cost_usd", 0.0)
+            data.setdefault("total_cost_usd", 0.0)
             data.setdefault("call_count", 0)
             data.setdefault("history", [])
+            data.setdefault("pricing_source", _OPENROUTER_PRICING_SOURCE)
+            data.setdefault("pricing_currency", "USD")
             return data
     except Exception:
         pass
-    return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "history": []}
+    return {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_input_cost_usd": 0.0,
+        "total_output_cost_usd": 0.0,
+        "total_cost_usd": 0.0,
+        "call_count": 0,
+        "history": [],
+        "pricing_source": _OPENROUTER_PRICING_SOURCE,
+        "pricing_currency": "USD",
+    }
 
 
-def _record_token_usage(input_tokens: int, output_tokens: int, model: str = "", node: str = "") -> None:
+def _record_token_usage(
+    input_tokens: int,
+    output_tokens: int,
+    model: str = "",
+    node: str = "",
+    provider: str = "",
+) -> None:
     if input_tokens <= 0 and output_tokens <= 0:
         return
+
+    provider_key = str(provider or "").strip().lower()
+    pricing = {
+        "input_cost_usd": 0.0,
+        "output_cost_usd": 0.0,
+        "total_cost_usd": 0.0,
+        "input_price_per_million_usd": 0.0,
+        "output_price_per_million_usd": 0.0,
+        "pricing_note": "",
+    }
+    if provider_key == "openrouter":
+        pricing = _calculate_openrouter_cost_usd(model=model, input_tokens=input_tokens, output_tokens=output_tokens)
+
     data = _read_token_usage()
     data["total_input_tokens"] = int(data.get("total_input_tokens", 0)) + int(input_tokens)
     data["total_output_tokens"] = int(data.get("total_output_tokens", 0)) + int(output_tokens)
+    data["total_input_cost_usd"] = round(
+        float(data.get("total_input_cost_usd", 0.0) or 0.0) + float(pricing["input_cost_usd"]),
+        6,
+    )
+    data["total_output_cost_usd"] = round(
+        float(data.get("total_output_cost_usd", 0.0) or 0.0) + float(pricing["output_cost_usd"]),
+        6,
+    )
+    data["total_cost_usd"] = round(
+        float(data.get("total_cost_usd", 0.0) or 0.0) + float(pricing["total_cost_usd"]),
+        6,
+    )
     data["call_count"] = int(data.get("call_count", 0)) + 1
     data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data["pricing_source"] = _OPENROUTER_PRICING_SOURCE
+    data["pricing_currency"] = "USD"
+
     history = data.get("history", [])
     if not isinstance(history, list):
         history = []
-    history.append({
+    row = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "provider": provider_key or "unknown",
         "model": str(model),
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
-    })
+        "input_cost_usd": round(float(pricing["input_cost_usd"]), 6),
+        "output_cost_usd": round(float(pricing["output_cost_usd"]), 6),
+        "total_cost_usd": round(float(pricing["total_cost_usd"]), 6),
+        "input_price_per_million_usd": float(pricing["input_price_per_million_usd"]),
+        "output_price_per_million_usd": float(pricing["output_price_per_million_usd"]),
+    }
+    pricing_note = str(pricing.get("pricing_note", "")).strip()
+    if pricing_note:
+        row["pricing_note"] = pricing_note
+    if node:
+        row["node"] = str(node)
+    history.append(row)
+
     # Keep last 500 entries
     data["history"] = history[-500:]
     path = _token_usage_file()
@@ -324,6 +467,8 @@ def call_llm(system_input: str,
         model_lower = str(model).lower()
         if "doubao" in model_lower:
             provider = "doubao"
+        elif model_lower in {x.lower() for x in _ALLOWED_MODELS_BY_PROVIDER["openrouter"]}:
+            provider = "openrouter"
         elif model_lower in {x.lower() for x in _ALLOWED_MODELS_BY_PROVIDER["anthropic"]}:
             provider = "anthropic"
         else:
@@ -781,7 +926,7 @@ def call_llm(system_input: str,
     _input_tokens = int(result_container.get('_input_tokens', 0) or 0)
     _output_tokens = int(result_container.get('_output_tokens', 0) or 0)
     if _input_tokens > 0 or _output_tokens > 0:
-        _record_token_usage(_input_tokens, _output_tokens, model=model)
+        _record_token_usage(_input_tokens, _output_tokens, model=model, provider=provider)
         print(f"| | |[TOKENS] input: {_input_tokens}, output: {_output_tokens}")
 
     if _should_print_full_llm_output():

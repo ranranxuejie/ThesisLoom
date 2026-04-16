@@ -29,13 +29,57 @@ ThesisLoom 是一个面向论文写作的本地化人机协作系统。它不是
 2. 需要在自动化与人工把控之间取得平衡的写作者。
 3. 希望使用桌面安装包直接开始，而不想先搭建开发环境的用户。
 
-## 工作流是什么样子（简版）
+## 工作流原理（可视化）
 
 主阶段为：
 
 pre_research -> drafting -> review_pending -> reviewing -> done
 
-你会在界面中看到流程状态，并在关键节点点击确认后继续。
+对应的执行逻辑可以理解为下面这张图：
+
+```mermaid
+flowchart TD
+	A[启动/恢复] --> B[pre_research\n题目与检索前置]
+	B --> C[drafting\n写作主阶段]
+	C --> C1[node_architect\n生成论文架构]
+	C1 --> C2[node_architecture_review\n架构审查]
+	C2 -->|通过或人工放行| C3[node_image_planner\n图片规划]
+	C3 --> C4[node_planner/header/opening/writer\n按章节与小节写作]
+	C4 -->|正文完整| D[review_pending\n等待进入审稿]
+	D -->|enter_reviewing| E[reviewing]
+	E --> E1[node_overall_review]
+	E1 --> E2[node_major_review]
+	E2 -->|通过| F[done]
+	E2 -->|未通过| E3[node_rewrite\n按子节改写]
+	E3 --> E4[confirm_next_review_round]
+	E4 -->|继续| E1
+	E4 -->|停止| F
+```
+
+## 核心设定（架构输出与审稿循环）
+
+### 1. 架构输出到底是什么
+
+1. node_architect 会生成结构化 outline，而不是一段自由文本。
+2. 每个大章节会带 writing_order，保证后续写作顺序可控。
+3. 每个子节会带 sub_chapter_id，后续 writer/rewrite 用它精确定位改写目标。
+4. node_architecture_review 会给出 issues、summary、improvement_actions。
+5. 只要存在 high 严重问题就不会自动通过；仅中低优问题可人工 set_architecture_force_continue 放行。
+6. 架构审查有轮次上限，最后一轮会自动采纳结果，避免架构阶段无穷循环。
+
+### 2. 审稿循环是怎么设计的
+
+1. 进入 reviewing 前，必须先经过 review_pending 的人工确认 enter_reviewing。
+2. 每一轮固定顺序：overall_review -> major_review -> rewrite(按子节) -> 人工确认下一轮。
+3. 每轮会输出 review_round_*.json 审稿报告，并保存版本化快照，方便回看和回滚。
+4. 如果审稿未通过但没有返回可改写子节，会提前结束，避免空转。
+5. 系统审稿安全上限固定为 20 轮，超过后停止自动循环并等待人工复核。
+
+### 3. 可恢复与人工决策机制
+
+1. 启动默认可暂停，继续时从 checkpoint 恢复，不会无脑从头重跑。
+2. 关键节点持续写入 runtime、events、checkpoint，前端可实时看到状态。
+3. 出现 pending action 时必须人工选择，流程才会继续推进。
 
 ## 实现逻辑（简要）
 
@@ -53,6 +97,54 @@ pre_research -> drafting -> review_pending -> reviewing -> done
 3. 在输入页填写主题、语言、模型和密钥配置。
 4. 点击继续，按界面提示完成前置确认。
 5. 在流程页观察执行进度，并在待确认节点进行人工决策。
+
+## 本地源码运行（无需打包）
+
+如果你不需要 MSI/EXE，只想在本地直接运行代码，推荐下面两种方式。
+
+### 方式 A：Python 后端 + Vite 前端（推荐调试）
+
+1. 安装 Python 依赖（仓库根目录执行）：
+
+```powershell
+pip install -r requirements.txt
+```
+
+2. 启动后端（仓库根目录执行）：
+
+```powershell
+python main.py --host 127.0.0.1 --port 18765 --interaction web
+```
+
+3. 启动前端（新开终端，`desktop_ui` 目录执行）：
+
+```powershell
+npm install
+npm run dev -- --host 127.0.0.1 --port 1510
+```
+
+4. 浏览器打开 `http://127.0.0.1:1510`。
+
+说明：前端默认请求后端 `http://127.0.0.1:18765`，与上述命令一致。
+
+### 方式 B：Tauri 开发模式（桌面窗口）
+
+1. 先准备 Rust 工具链（需可用 `cargo`）。
+2. 在 `desktop_ui` 目录执行：
+
+```powershell
+cd desktop_ui
+npm install
+npm run tauri dev
+```
+
+该模式用于本地桌面调试，不会生成安装包。
+
+### 常见问题
+
+1. 端口被占用：请先释放 `18765`（后端）和 `1510`（前端），或改命令中的端口并保持前后端一致。
+2. 前端连不上后端：确认后端日志出现 `Backend running at http://127.0.0.1:18765`。
+3. 流程默认暂停：这是预期行为，需在前端点击继续后才会进入实际节点执行。
 
 ## README 与 docs 的分工
 

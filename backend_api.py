@@ -45,14 +45,57 @@ EDITABLE_INPUT_REL_FILES = [
   "inputs/write_requests.md",
   "inputs/revision_requests.md",
 ]
+EDITABLE_TEMPLATE_REL_DIRS = [
+  "inputs/guidance",
+  "inputs/review",
+]
+EDITABLE_TEMPLATE_DEFAULT_FILES = {
+  "inputs/guidance/overall_guidance.md": "# Overall Guidance\n\nProvide overall writing guidance for all sections.\n",
+  "inputs/review/overall_review.md": "# Overall Review Rules\n\nProvide global review criteria and quality checks.\n",
+}
+
+
+def _ensure_editable_template_defaults() -> None:
+  for rel_path, default_content in EDITABLE_TEMPLATE_DEFAULT_FILES.items():
+    abs_path = absolute_path_in_project(rel_path)
+    try:
+      os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+      if not os.path.exists(abs_path):
+        with open(abs_path, "w", encoding="utf-8") as f:
+          f.write(default_content)
+    except Exception:
+      continue
+
+
+def _collect_editable_template_files() -> list[str]:
+  _ensure_editable_template_defaults()
+
+  rel_files: list[str] = []
+  for rel_dir in EDITABLE_TEMPLATE_REL_DIRS:
+    abs_dir = Path(absolute_path_in_project(rel_dir))
+    if not abs_dir.is_dir():
+      continue
+
+    for item in sorted(abs_dir.glob("*.md")):
+      try:
+        rel_path = relative_to_project(str(item))
+      except Exception:
+        continue
+      rel_files.append(str(rel_path).replace("\\", "/"))
+
+  return rel_files
 
 
 def get_editable_input_files() -> list[str]:
-  return [absolute_path_in_project(p) for p in EDITABLE_INPUT_REL_FILES]
+  return [absolute_path_in_project(p) for p in get_editable_input_display_files()]
 
 
 def get_editable_input_display_files() -> list[str]:
-  return list(EDITABLE_INPUT_REL_FILES)
+  files = list(EDITABLE_INPUT_REL_FILES)
+  for rel_path in _collect_editable_template_files():
+    if rel_path not in files:
+      files.append(rel_path)
+  return files
 
 
 def _action_file() -> str:
@@ -862,17 +905,39 @@ def _read_metrics_snapshot() -> dict:
 
 
 def _read_token_usage_snapshot() -> dict:
+  def _to_float(value: object) -> float:
     try:
-        from core.llm import _read_token_usage
-        data = _read_token_usage()
-        return {
-            "total_input_tokens": int(data.get("total_input_tokens", 0)),
-            "total_output_tokens": int(data.get("total_output_tokens", 0)),
-            "call_count": int(data.get("call_count", 0)),
-            "updated_at": str(data.get("updated_at", "")),
-        }
+      return float(value)
     except Exception:
-        return {"total_input_tokens": 0, "total_output_tokens": 0, "call_count": 0, "updated_at": ""}
+      return 0.0
+
+  try:
+    from core.llm import _read_token_usage
+
+    data = _read_token_usage()
+    return {
+      "total_input_tokens": int(data.get("total_input_tokens", 0)),
+      "total_output_tokens": int(data.get("total_output_tokens", 0)),
+      "total_input_cost_usd": round(_to_float(data.get("total_input_cost_usd", 0.0)), 6),
+      "total_output_cost_usd": round(_to_float(data.get("total_output_cost_usd", 0.0)), 6),
+      "total_cost_usd": round(_to_float(data.get("total_cost_usd", 0.0)), 6),
+      "call_count": int(data.get("call_count", 0)),
+      "updated_at": str(data.get("updated_at", "")),
+      "pricing_source": str(data.get("pricing_source", "")),
+      "pricing_currency": str(data.get("pricing_currency", "USD")),
+    }
+  except Exception:
+    return {
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_input_cost_usd": 0.0,
+      "total_output_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "call_count": 0,
+      "updated_at": "",
+      "pricing_source": "",
+      "pricing_currency": "USD",
+    }
 
 
 def _read_runtime_snapshot() -> dict:
@@ -963,6 +1028,10 @@ def _read_state_snapshot() -> dict:
             "next_steps_plan": [],
             "next_steps_updated_at": "",
             "paper_outputs": [],
+            "user_image_descriptions": [],
+            "planned_image_descriptions": [],
+            "image_planning_done": False,
+            "image_planning_summary": "",
             "workflow_metrics": metrics,
             "token_usage": token_usage,
             "project_name": project_name,
@@ -1105,6 +1174,13 @@ def _read_state_snapshot() -> dict:
                 "context_routing": sub.get("context_routing", {}),
             })
 
+        raw_user_images = data.get("user_image_descriptions", [])
+        user_image_descriptions = [x for x in raw_user_images if isinstance(x, dict)] if isinstance(raw_user_images, list) else []
+        raw_planned_images = data.get("planned_image_descriptions", data.get("image_descriptions", []))
+        planned_image_descriptions = [x for x in raw_planned_images if isinstance(x, dict)] if isinstance(raw_planned_images, list) else []
+        image_planning_done = bool(data.get("image_planning_done", bool(planned_image_descriptions)))
+        image_planning_summary = str(data.get("image_planning_summary", "")).strip()
+
     return {
         "ok": True,
         "has_checkpoint": True,
@@ -1160,6 +1236,10 @@ def _read_state_snapshot() -> dict:
         "paper_outputs": paper_outputs,
         "architect_outline": outline,
         "planner_outputs": planner_outputs,
+        "user_image_descriptions": user_image_descriptions,
+        "planned_image_descriptions": planned_image_descriptions,
+        "image_planning_done": image_planning_done,
+        "image_planning_summary": image_planning_summary,
         "overall_review_summary": str(data.get("review_summary", "")),
         "overall_review_plans": data.get("major_review_plans", []) if isinstance(data.get("major_review_plans", []), list) else [],
         "major_review_items": reviewed_sections,
