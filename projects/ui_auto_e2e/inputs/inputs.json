@@ -1,12 +1,13 @@
-﻿{
-    "topic":  "",
-    "language":  "English",
-    "model":  "doubao-seed-2-0-pro-260215",
-    "paper_search_limit":  30,
-    "openalex_api_key":  "",
-    "ark_api_key":  "",
-    "base_url":  "",
-    "model_api_key":  "",
-    "manual_revision_path":  "inputs/revision_requests.md",
-    "auto_resume":  false
+{
+  "manual_revision_path": "inputs/revision_requests.md",
+  "topic": "",
+  "language": "English",
+  "model": "claude-opus-4-6",
+  "model_provider": "anthropic",
+  "paper_search_limit": 30,
+  "openalex_api_key": "eg2wKcU07gdO6c31i2oT7m",
+  "ark_api_key": "",
+  "base_url": "https://nexusacc.itssx.com/api/claude_code/office8",
+  "model_api_key": "sk-ad98b6ea856409cce6b5d333aec87ca65ced76d42e55f295",
+  "image_descriptions": []
 }

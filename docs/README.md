@@ -8,9 +8,11 @@
 
 1. workflow_stage_architecture.md
 2. build_and_package.md
+3. ui_page_guide.md
 
 ## 文档分工
 
 1. 仓库 README：产品介绍与 release 用户上手。
 2. docs/workflow_stage_architecture.md：状态机阶段、断点恢复、人工动作、运行时文件。
 3. docs/build_and_package.md：开发者构建与打包流程。
+4. docs/ui_page_guide.md：桌面端页面截图、功能导览与下一步迭代计划。

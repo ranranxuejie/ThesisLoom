@@ -148,6 +148,70 @@ Max Review Rounds: ${max_architecture_review_rounds}
 </JSON_Schema>
 """)
 
+PROMPT_IMAGE_PLANNER_EN = Template("""
+<Role>Academic Figure Planning Specialist</Role>
+<Task>Build the final image-description pool after architecture confirmation, preserving user-provided images and adding only high-value missing ones.</Task>
+
+<Context>
+Topic: ${topic}
+Language: ${language}
+User Requirements:
+${user_requirements}
+Confirmed Outline:
+${outline}
+User Image Descriptions (must be preserved when valid):
+${user_image_descriptions}
+Overall Guidance:
+${overall_guidance}
+</Context>
+
+<Critical_Memory_Anchors>
+1. Output JSON object only with top-level field planned_image_descriptions.
+2. Keep every valid user image in the final list; mark them with image_origin="user".
+3. Add model images only when they improve chapter clarity, experimental transparency, or comparative evidence.
+4. Avoid semantic duplicates and generic filler figures.
+5. Every item must include detailed_description and title.
+6. related_major_chapter_ids must reference existing major_chapter_id values from outline.
+</Critical_Memory_Anchors>
+
+<Rules>
+1. Preserve user intent first, then minimally supplement missing critical figures.
+2. Prefer chapter-specific figures over broad decorative figures.
+3. image_origin enum: "user" or "model_added".
+4. rationale should explain why the image is necessary for that chapter context.
+5. Keep wording in ${language} where feasible.
+6. No markdown fences, no prose outside JSON.
+</Rules>
+
+<JSON_Schema>
+{
+  "type": "object",
+  "properties": {
+    "planned_image_descriptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "detailed_description": { "type": "string" },
+          "title": { "type": "string" },
+          "image_origin": { "type": "string", "enum": ["user", "model_added"] },
+          "related_major_chapter_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "rationale": { "type": "string" }
+        },
+        "required": ["detailed_description", "title", "image_origin", "related_major_chapter_ids", "rationale"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["planned_image_descriptions"],
+  "additionalProperties": false
+}
+</JSON_Schema>
+""")
+
 PROMPT_PLANNER_EN = Template("""
 <Role>Top-Tier Academic Major-Chapter Planner</Role>
 <Task>Create paragraph-level plans for every subsection within one major chapter.</Task>
@@ -165,6 +229,8 @@ Overall Guidance:
 ${overall_guidance}
 Guidance Catalog:
 ${writing_guidance_catalog}
+Available Image Descriptions:
+${available_image_descriptions}
 </Context>
 
 <Critical_Memory_Anchors>
@@ -173,6 +239,8 @@ ${writing_guidance_catalog}
 3. For chapter 0, required_section_ids should usually be [].
 4. Every subsection must include paragraph_blueprints with concrete required_details.
 5. Always select selected_guidance_key or use none.
+6. If a subsection needs images, output required_images as an array.
+7. Each required_images item should include detailed_description and title; image_id can be omitted and will be assigned by runtime.
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -216,9 +284,21 @@ ${writing_guidance_catalog}
             }
           },
           "selected_guidance_key": { "type": "string" },
-          "guidance_reason": { "type": "string" }
+          "guidance_reason": { "type": "string" },
+          "required_images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "detailed_description": { "type": "string" },
+                "title": { "type": "string" },
+                "image_id": { "type": "string" }
+              },
+              "required": ["detailed_description", "title"]
+            }
+          }
         },
-        "required": ["sub_chapter_id", "context_routing", "paragraph_blueprints", "selected_guidance_key", "guidance_reason"]
+        "required": ["sub_chapter_id", "context_routing", "paragraph_blueprints", "selected_guidance_key", "guidance_reason", "required_images"]
       }
     }
   },
@@ -254,6 +334,8 @@ Required Previous Sections:
 ${existing_sections}
 Selected Writing Guidance:
 ${selected_writing_guidance}
+Required Images:
+${required_images}
 Is Zero Chapter: ${is_zero_chapter}
 </Context>
 
@@ -266,6 +348,9 @@ Is Zero Chapter: ${is_zero_chapter}
 6. For chapter 0, enforce non-numbered front matter structure.
 7. If sub_chapter_id is 0.1, output title line only (no explanatory paragraph).
 8. If sub_chapter_id is 0.2, output author line(s) only (no affiliation/funding explanation).
+9. For non-zero chapters, if Required Images is not empty, output each image block with this exact two-line format:
+  【图片的超级详细的描述】
+  【大章节编号.图片编号 图标题】
 </Critical_Memory_Anchors>
 
 <Rules>
@@ -276,6 +361,7 @@ Is Zero Chapter: ${is_zero_chapter}
 5. Keep language consistent with ${language} except standard abbreviations.
 6. Never output boilerplate explanatory sentences about placeholders or publication standards.
 7. No JSON output, no markdown fences, no meta-text.
+8. Do not rename image IDs; keep the exact image_id provided in Required Images.
 </Rules>
 
 <Final_Target_Reminder>
@@ -725,6 +811,7 @@ PROMPT_TEMPLATE = {
     "en": {
         "architect": PROMPT_ARCHITECT_EN,
         "architecture_reviewer": PROMPT_ARCHITECTURE_REVIEWER_EN,
+        "image_planner": PROMPT_IMAGE_PLANNER_EN,
         "planner": PROMPT_PLANNER_EN,
         "writer": PROMPT_WRITER_EN,
       "zero_chapter_writer": PROMPT_ZERO_CHAPTER_WRITER_EN,
