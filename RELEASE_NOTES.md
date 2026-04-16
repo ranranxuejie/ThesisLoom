@@ -1,7 +1,7 @@
 # ThesisLoom Release Notes
 
-- 日期: 2026-04-15
-- Tag: v0.2.0
+- 日期: 2026-04-16
+- Tag: v0.2.1
 - 发布类型: Desktop（Tauri + Local Python Backend）
 
 ## 本版摘要
